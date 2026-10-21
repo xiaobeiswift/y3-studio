@@ -1,13 +1,18 @@
 [package]
 name = "y3-helper"
-version = "1.0.0"
+version = "0.0.1"
 edition = "2021"
 description = "Standalone Rust implementation of Y3-Helper with multi-project and multi-map concurrent support (no VS Code UI dependency)"
-authors = ["Y3-Helper Rust Team"]
+authors = ["不明不惑"]
+default-run = "y3-helper"
 
 [[bin]]
 name = "y3-helper"
 path = "src/main.rs"
+
+[[bin]]
+name = "y3-studio-setup"
+path = "src/bin/installer.rs"
 
 [lib]
 name = "y3_helper"
@@ -47,3 +52,7 @@ rfd = "0.15"
 
 [dev-dependencies]
 tempfile = "3.12"
+
+[profile.release]
+strip = "symbols"
+opt-level = 3

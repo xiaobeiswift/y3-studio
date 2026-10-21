@@ -1218,14 +1218,9 @@ impl ProjectInitializer {
         let editor_url = format!("http://127.0.0.1:{}/y3editor/mcp", mcp_port);
         let runtime_url = format!("http://127.0.0.1:{}/y3runtime/mcp", mcp_port);
 
-        // 同时注册 y3-helper 与 helper 别名，完美兼容官方技能文档中的 helper.xxx 与 y3-helper.xxx 调用！
         let mcp_json_payload = json!({
             "mcpServers": {
                 "y3-helper": {
-                    "type": "http",
-                    "url": helper_url
-                },
-                "helper": {
                     "type": "http",
                     "url": helper_url
                 },
@@ -1271,7 +1266,7 @@ impl ProjectInitializer {
                     }
                     let proj_mcp = project_path.join(".mcp.json");
                     fs::write(&proj_mcp, serde_json::to_string_pretty(&mcp_json_payload)?)?;
-                    logs.push(format!("已写入项目级 MCP 配置 (含 helper 别名): {}", proj_mcp.display()));
+                    logs.push(format!("已写入项目级 MCP 配置: {}", proj_mcp.display()));
                 }
                 "claude" => {
                     if skills_src.is_dir() {
@@ -1331,7 +1326,7 @@ impl ProjectInitializer {
                     );
                     fs::write(&codex_cfg, updated)?;
                     logs.push(format!(
-                        "已更新 OpenAI Codex 全局配置: {} (注入 y3-helper / helper / y3editor / y3runtime)",
+                        "已更新 OpenAI Codex 全局配置: {}",
                         codex_cfg.display()
                     ));
                 }
@@ -1349,7 +1344,7 @@ impl ProjectInitializer {
         }))
     }
 
-    /// 无损更新 `~/.codex/config.toml` 中的 `[mcp_servers.y3-helper]`、`[mcp_servers.helper]`、`[mcp_servers.y3editor]`、`[mcp_servers.y3runtime]`
+    /// 无损更新 `~/.codex/config.toml` 中的 `[mcp_servers.y3-helper]`、`[mcp_servers.y3editor]`、`[mcp_servers.y3runtime]`
     fn upsert_codex_config_toml(
         existing: &str,
         helper_url: &str,
@@ -1388,8 +1383,8 @@ impl ProjectInitializer {
             out.push_str("\n\n");
         }
         out.push_str(&format!(
-            "[mcp_servers.y3-helper]\nurl = \"{}\"\n\n[mcp_servers.helper]\nurl = \"{}\"\n\n[mcp_servers.y3editor]\nurl = \"{}\"\n\n[mcp_servers.y3runtime]\nurl = \"{}\"\n",
-            helper_url, helper_url, editor_url, runtime_url
+            "[mcp_servers.y3-helper]\nurl = \"{}\"\n\n[mcp_servers.y3editor]\nurl = \"{}\"\n\n[mcp_servers.y3runtime]\nurl = \"{}\"\n",
+            helper_url, editor_url, runtime_url
         ));
 
         let proj_header = format!("[projects.'{}']", project_path);

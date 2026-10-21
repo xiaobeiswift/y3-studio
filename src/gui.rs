@@ -314,7 +314,8 @@ fn spawn_system_tray_thread(mcp_port: u16) {
         nid.h_icon = create_studio_hicon();
 
         let tip = to_wide(&format!(
-            "Y3 Studio (MCP :{}) — 左键打开 / 右键退出",
+            "Y3 Studio v{} (MCP :{}) — 左键打开 / 右键退出",
+            env!("CARGO_PKG_VERSION"),
             mcp_port
         ));
         for (i, &ch) in tip.iter().take(127).enumerate() {
@@ -689,6 +690,8 @@ impl Y3StudioApp {
         self.rt.spawn(async move {
             match disp.call_tool(tool, &args).await {
                 Ok(res) => {
+                    let pretty = serde_json::to_string_pretty(&res).unwrap_or_default();
+                    let _ = tx.send(AsyncMsg::BuildOutputLoaded(pretty));
                     let msg = res
                         .get("message")
                         .and_then(|v| v.as_str())
@@ -700,6 +703,7 @@ impl Y3StudioApp {
                     });
                 }
                 Err(e) => {
+                    let _ = tx.send(AsyncMsg::BuildOutputLoaded(format!("{} 失败:\n{}", label, e)));
                     let _ = tx.send(AsyncMsg::Toast {
                         msg: format!("{} 失败: {}", label, e),
                         is_err: true,
@@ -707,6 +711,75 @@ impl Y3StudioApp {
                 }
             }
             egui_ctx.request_repaint();
+        });
+    }
+
+    fn init_current_project(&mut self) {
+        let Some(pid) = self.active_project_id.clone() else {
+            return;
+        };
+        let map = self.active_map_name.clone();
+        let repo_src = if self.sync_source == "github" {
+            "github".to_string()
+        } else {
+            "gitee".to_string()
+        };
+        let disp = self.dispatcher.clone();
+        let tx = self.tx.clone();
+        let egui_ctx = self.egui_ctx.clone();
+        let mcp_port = self.mcp_port;
+        self.set_toast(
+            "正在初始化项目 (克隆 y3-lualib 到 script/y3、复制项目配置并初始化 .y3maker)...",
+            false,
+        );
+
+        self.rt.spawn(async move {
+            match disp
+                .call_tool(
+                    "init_project",
+                    &json!({
+                        "projectPath": pid,
+                        "mapName": map,
+                        "repoSource": repo_src
+                    }),
+                )
+                .await
+            {
+                Ok(res) => {
+                    let pretty = serde_json::to_string_pretty(&res).unwrap_or_default();
+                    let _ = tx.send(AsyncMsg::BuildOutputLoaded(pretty));
+                    let _ = disp
+                        .call_tool(
+                            "sync_y3maker",
+                            &json!({
+                                "projectPath": pid,
+                                "repoSource": "local",
+                                "mcpPort": mcp_port
+                            }),
+                        )
+                        .await;
+                    let map_str = res
+                        .get("map_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("EntryMap");
+                    let _ = tx.send(AsyncMsg::Toast {
+                        msg: format!("项目初始化完成（已就绪 {}/script/y3 与 .y3maker）", map_str),
+                        is_err: false,
+                    });
+                    Self::fetch_and_send_refresh(&disp, &tx, &egui_ctx, Some(&pid), mcp_port).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(AsyncMsg::BuildOutputLoaded(format!(
+                        "初始化项目失败:\n{}",
+                        e
+                    )));
+                    let _ = tx.send(AsyncMsg::Toast {
+                        msg: format!("初始化项目失败: {}", e),
+                        is_err: true,
+                    });
+                    egui_ctx.request_repaint();
+                }
+            }
         });
     }
 
@@ -1109,9 +1182,13 @@ impl eframe::App for Y3StudioApp {
                     ui.colored_label(color, &self.status_msg);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new(format!("MCP :{}", self.mcp_port))
-                                .size(11.5)
-                                .color(Color32::from_rgb(110, 118, 138)),
+                            RichText::new(format!(
+                                "v{}  |  MCP :{}",
+                                env!("CARGO_PKG_VERSION"),
+                                self.mcp_port
+                            ))
+                            .size(11.5)
+                            .color(Color32::from_rgb(110, 118, 138)),
                         );
                     });
                 });
@@ -1423,7 +1500,6 @@ impl Y3StudioApp {
                 let cfg = serde_json::to_string_pretty(&json!({
                     "mcpServers": {
                         "y3-helper": { "url": format!("{}/mcp", base) },
-                        "helper": { "url": format!("{}/mcp", base) },
                         "y3editor": { "url": format!("{}/y3editor/mcp", base) },
                         "y3runtime": { "url": format!("{}/y3runtime/mcp", base) }
                     }
@@ -1560,6 +1636,18 @@ impl Y3StudioApp {
                 {
                     self.call_tool_async("launch_editor", json!({}), "打开编辑器");
                 }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("初始化项目").color(Color32::WHITE))
+                            .fill(Color32::from_rgb(37, 99, 235)),
+                    )
+                    .on_hover_text(
+                        "初始化新地图：克隆 y3-lualib 到 script/y3、复制默认项目配置并同步 .y3maker",
+                    )
+                    .clicked()
+                {
+                    self.init_current_project();
+                }
                 ui.separator();
                 if ui.button("热重载 (.rd)").clicked() {
                     self.call_tool_async("reload_lua", json!({}), "热重载");
@@ -1689,6 +1777,20 @@ impl Y3StudioApp {
                         .clicked()
                     {
                         self.sync_y3maker();
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("初始化项目 (y3-lualib)").color(Color32::WHITE),
+                            )
+                            .fill(Color32::from_rgb(37, 99, 235)),
+                        )
+                        .on_hover_text(
+                            "新地图一键初始化：克隆 y3-lualib 到 script/y3、复制项目配置并同步 .y3maker",
+                        )
+                        .clicked()
+                    {
+                        self.init_current_project();
                     }
                 });
 
@@ -2173,6 +2275,13 @@ impl Y3StudioApp {
                     if ui.button("启用全局脚本").clicked() {
                         self.call_tool_async("enable_global_script", json!({}), "启用全局脚本");
                     }
+                    if ui
+                        .button("初始化项目 (y3-lualib)")
+                        .on_hover_text("克隆 y3-lualib 到 script/y3、复制项目配置并初始化 .y3maker")
+                        .clicked()
+                    {
+                        self.init_current_project();
+                    }
                 });
             });
 
@@ -2338,14 +2447,45 @@ fn setup_dark_theme(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 }
 
+pub fn create_studio_icon_rgba(size: usize) -> Vec<u8> {
+    let mut rgba = vec![0u8; size * size * 4];
+    for y in 0..size {
+        for x in 0..size {
+            let idx = (y * size + x) * 4;
+            let nx = (x * 16) / size;
+            let ny = (y * 16) / size;
+            let in_bolt = (ny >= 2 && ny <= 8 && nx >= (9usize.saturating_sub(ny)) && nx <= 9)
+                || (ny >= 7 && ny <= 13 && nx >= 6 && nx <= (16usize.saturating_sub(ny)));
+            if in_bolt {
+                rgba[idx] = 255;
+                rgba[idx + 1] = 255;
+                rgba[idx + 2] = 255;
+                rgba[idx + 3] = 255;
+            } else {
+                rgba[idx] = 82;
+                rgba[idx + 1] = 95;
+                rgba[idx + 2] = 235;
+                rgba[idx + 3] = 255;
+            }
+        }
+    }
+    rgba
+}
+
 /// 启动纯 Rust 原生 GPU/OpenGL 桌面客户端（0 WebView2 进程，内存占用 ~25MB）
 pub fn run_native_desktop_gui(
     dispatcher: Arc<ToolDispatcher>,
     mcp_port: u16,
 ) -> anyhow::Result<()> {
+    let icon = egui::IconData {
+        rgba: create_studio_icon_rgba(32),
+        width: 32,
+        height: 32,
+    };
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Y3 Studio")
+            .with_icon(Arc::new(icon))
             .with_inner_size(Vec2::new(1280.0, 800.0))
             .with_min_inner_size(Vec2::new(980.0, 620.0)),
         ..Default::default()

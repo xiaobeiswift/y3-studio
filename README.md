@@ -39,12 +39,12 @@
 
 ## 怎么用？（3 步上手）
 
-### 第一步：添加你的 Y3 地图项目
-打开 `y3-helper.exe`，点击左上角 **`+ 添加项目`**，选择你的 Y3 地图根目录（里面有 `header.project` 或 `header.map` 的那个文件夹）。添加过的项目会自动记住，下次打开不用重新选。
+### 第一步：添加并初始化你的 Y3 地图项目
+打开 `y3-helper.exe`，点击左上角 **`+ 添加项目`**，选择你的 Y3 地图根目录（里面有 `header.project` 或 `header.map` 的那个文件夹）。如果是新建的地图，直接点击顶部快捷栏的 **「初始化项目」**（或技能库页面的 **「初始化项目 (y3-lualib)」**），会自动克隆 `y3-lualib` 到 `script/y3`、复制模板项目配置并同步 `.y3maker`。
 
 ### 第二步：同步并一键装配 AI 技能
 在默认打开的 **「技能库 (.y3maker)」** 页面：
-1. 点击左侧卡片的 **「同步技能库」**（首次拉取后会自动缓存在本机，以后新建项目都是秒同步）；
+1. 点击左侧卡片的 **「同步技能库」**（或 **「初始化项目 (y3-lualib)」**，首次拉取后会自动缓存在本机，以后新建项目都是秒同步）；
 2. 在右侧卡片勾选你正在使用的 AI 工具，点击 **「一键装配」**，状态全部变成绿色的 **`已装配`** 就行了。
 
 ### 第三步：复制 MCP 配置到你的 AI 软件
@@ -54,7 +54,6 @@
 {
   "mcpServers": {
     "y3-helper": { "url": "http://127.0.0.1:8766/mcp" },
-    "helper": { "url": "http://127.0.0.1:8766/mcp" },
     "y3editor": { "url": "http://127.0.0.1:8766/y3editor/mcp" },
     "y3runtime": { "url": "http://127.0.0.1:8766/y3runtime/mcp" }
   }
@@ -68,7 +67,7 @@
 ## 界面功能一览
 
 - **顶部快捷栏**：
-  - `▶ 启动游戏` / `打开编辑器`
+  - `▶ 启动游戏` / `打开编辑器` / `初始化项目`（新地图一键克隆 `y3-lualib` 到 `script/y3`、复制项目配置并初始化 `.y3maker`）
   - `热重载 (.rd)`（改完 Lua 不用重启游戏直接生效）
   - `物编热更` / `触发器热更` / `重启 (.rr)` / `结束游戏` / `打开目录`
 - **技能库 (.y3maker)**：管理官方技能库同步、AI 工具装配状态，点击任意技能卡片可直接查看技能说明文档。
@@ -106,14 +105,25 @@ y3-helper.exe save-gmp -p "D:\Maps\MyMap"
 
 ---
 
-## 从源码编译
+## 从源码编译与打包发行版
 
 环境要求：Windows + Rust 工具链（`cargo`）
 
 ```powershell
+# GitHub 源
 git clone https://github.com/xiaobeiswift/y3-studio.git
+# 或 Gitee 国内源
+git clone https://gitee.com/xiaobeiswift/y3-studio.git
+
 cd y3-studio
+
+# 仅编译主程序
 cargo build --release
+
+# 一键构建正式版（同时生成 Windows 安装包 setup.exe 与绿色包 portable.zip）
+powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
-编译产物位于 `target\release\y3-helper.exe`（单文件无外部 DLL 依赖，拷到任何地方都能直接运行）。
+打包完成后产物位于 `dist\` 目录：
+- `dist\Y3-Studio-v0.0.1-win-x64-setup.exe`：Windows 图形化安装包（含桌面/开始菜单快捷方式、PATH 环境变量配置及标准卸载程序 `uninstall.exe`，支持 `/S` 静默安装）
+- `dist\Y3-Studio-v0.0.1-win-x64-portable.zip`：Windows 绿色免安装包（解压即用，单文件无外部 DLL 依赖）
