@@ -6,18 +6,120 @@ use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use walkdir::WalkDir;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// 自动探测本机 `git.exe` 绝对路径（解决 UAC 提权或受限进程未继承用户级 PATH 导致 `program not found` 的问题）
+fn resolve_git_exe() -> &'static PathBuf {
+    static GIT_EXE: OnceLock<PathBuf> = OnceLock::new();
+    GIT_EXE.get_or_init(|| {
+        // 1. 从当前进程 PATH 环境变量搜索
+        if let Some(path_os) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_os) {
+                let candidate = dir.join("git.exe");
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+
+        // 2. 扫描常见用户级与系统级 Git 安装位置
+        let mut candidates = Vec::new();
+        if let Some(local_appdata) = std::env::var_os("LOCALAPPDATA") {
+            let base = PathBuf::from(local_appdata);
+            candidates.push(base.join("Programs").join("Git").join("cmd").join("git.exe"));
+            candidates.push(base.join("Programs").join("Git").join("bin").join("git.exe"));
+        }
+        if let Some(userprofile) = std::env::var_os("USERPROFILE") {
+            let base = PathBuf::from(userprofile);
+            candidates.push(
+                base.join("AppData")
+                    .join("Local")
+                    .join("Programs")
+                    .join("Git")
+                    .join("cmd")
+                    .join("git.exe"),
+            );
+            candidates.push(
+                base.join("scoop")
+                    .join("apps")
+                    .join("git")
+                    .join("current")
+                    .join("cmd")
+                    .join("git.exe"),
+            );
+        }
+        for fixed in [
+            r"C:\Program Files\Git\cmd\git.exe",
+            r"C:\Program Files\Git\bin\git.exe",
+            r"C:\Program Files (x86)\Git\cmd\git.exe",
+            r"D:\Program Files\Git\cmd\git.exe",
+            r"D:\Git\cmd\git.exe",
+        ] {
+            candidates.push(PathBuf::from(fixed));
+        }
+        for c in candidates {
+            if c.is_file() {
+                return c;
+            }
+        }
+
+        // 3. 从注册表 HKCU\Environment 读取用户 Path
+        #[cfg(windows)]
+        {
+            let mut reg_cmd = Command::new("reg.exe");
+            reg_cmd
+                .args(["query", r"HKCU\Environment", "/v", "Path"])
+                .creation_flags(CREATE_NO_WINDOW);
+            if let Ok(out) = reg_cmd.output() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for part in text.split(';') {
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() {
+                        let c = PathBuf::from(trimmed).join("git.exe");
+                        if c.is_file() {
+                            return c;
+                        }
+                    }
+                }
+            }
+        }
+
+        PathBuf::from("git")
+    })
+}
+
 fn hidden_cmd(prog: &str) -> Command {
-    let mut cmd = Command::new(prog);
+    let is_git = prog.eq_ignore_ascii_case("git");
+    let mut cmd = if is_git {
+        Command::new(resolve_git_exe())
+    } else {
+        Command::new(prog)
+    };
     #[cfg(windows)]
     {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    if prog.eq_ignore_ascii_case("git") {
+    if is_git {
+        if let Some(git_dir) = resolve_git_exe().parent() {
+            let cur_path = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths: Vec<PathBuf> = std::env::split_paths(&cur_path).collect();
+            if !paths.iter().any(|p| p == git_dir) {
+                paths.insert(0, git_dir.to_path_buf());
+                if let Some(root) = git_dir.parent() {
+                    let usr_bin = root.join("usr").join("bin");
+                    if usr_bin.is_dir() {
+                        paths.insert(1, usr_bin);
+                    }
+                }
+                if let Ok(joined) = std::env::join_paths(paths) {
+                    cmd.env("PATH", joined);
+                }
+            }
+        }
         cmd.env("GIT_TERMINAL_PROMPT", "0")
             .env("GCM_INTERACTIVE", "never")
             .env("GIT_ASKPASS", "echo")
@@ -137,40 +239,49 @@ impl ProjectInitializer {
         fs::create_dir_all(&map.script_path)?;
         let y3_dir = map.script_path.join("y3");
 
-        if !y3_dir.join(".git").is_dir() {
+        if !y3_dir.join(".git").is_dir() && !y3_dir.join("init.lua").is_file() {
             if y3_dir.exists() {
                 fs::remove_dir_all(&y3_dir)?;
             }
-            let status = hidden_cmd("git")
+            let clone_ok = hidden_cmd("git")
                 .args([
                     "clone",
                     source.lualib_url(),
                     &y3_dir.to_string_lossy(),
                 ])
-                .status()?;
-            if !status.success() {
-                anyhow::bail!("git clone y3-lualib 失败 (URL: {})", source.lualib_url());
-            }
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
 
-            // 如果编辑器版本为 1.0，切换到 1.0 分支
-            if editor.map(|e| e.version == "1.0").unwrap_or(false) {
-                let _ = hidden_cmd("git")
-                    .args([
-                        "-C",
-                        &y3_dir.to_string_lossy(),
-                        "checkout",
-                        "-b",
-                        "1.0",
-                        "origin/1.0",
-                    ])
-                    .status();
+            if clone_ok {
+                // 如果编辑器版本为 1.0，切换到 1.0 分支
+                if editor.map(|e| e.version == "1.0").unwrap_or(false) {
+                    let _ = hidden_cmd("git")
+                        .args([
+                            "-C",
+                            &y3_dir.to_string_lossy(),
+                            "checkout",
+                            "-b",
+                            "1.0",
+                            "origin/1.0",
+                        ])
+                        .status();
+                }
+            } else if let Some(sibling_y3) = Self::find_local_cached_y3_lualib(&project.project_path) {
+                Self::copy_dir_recursive(&sibling_y3, &y3_dir)?;
+            } else {
+                anyhow::bail!(
+                    "git clone y3-lualib 失败 (URL: {}，git: {})",
+                    source.lualib_url(),
+                    resolve_git_exe().display()
+                );
             }
         }
 
         // 创建 script/.log
         let _ = fs::create_dir_all(map.script_path.join(".log"));
 
-        // 复制 y3/演示/项目配置/* 到 script/
+        // 复制 y3/演示/项目配置/* 到 script/（自动替换编辑器新建地图自带的 3 行注释占位 main.lua）
         let mut copied_files = Vec::new();
         let demo_cfg_dir = y3_dir.join("演示").join("项目配置");
         if demo_cfg_dir.is_dir() {
@@ -179,12 +290,33 @@ impl ProjectInitializer {
                     let dst = map.script_path.join(rel);
                     if entry.file_type().is_dir() {
                         let _ = fs::create_dir_all(&dst);
-                    } else if entry.file_type().is_file() && !dst.exists() {
-                        if let Some(p) = dst.parent() {
-                            let _ = fs::create_dir_all(p);
-                        }
-                        if fs::copy(entry.path(), &dst).is_ok() {
-                            copied_files.push(rel.to_string_lossy().to_string());
+                    } else if entry.file_type().is_file() {
+                        let should_copy = if !dst.exists() {
+                            true
+                        } else if dst
+                            .file_name()
+                            .map(|n| n.to_string_lossy().eq_ignore_ascii_case("main.lua"))
+                            .unwrap_or(false)
+                        {
+                            // 若 main.lua 仅为编辑器新建项目时的默认占位注释，则用 y3-lualib 模板覆盖
+                            fs::read_to_string(&dst)
+                                .map(|txt| {
+                                    txt.contains("请到vscode插件商城下载")
+                                        || (txt.len() < 260
+                                            && !txt.contains("y3.")
+                                            && !txt.contains("clicli"))
+                                })
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        };
+                        if should_copy {
+                            if let Some(p) = dst.parent() {
+                                let _ = fs::create_dir_all(p);
+                            }
+                            if fs::copy(entry.path(), &dst).is_ok() {
+                                copied_files.push(rel.to_string_lossy().to_string());
+                            }
                         }
                     }
                 }
@@ -192,9 +324,16 @@ impl ProjectInitializer {
         }
 
         let y3maker_status = if init_y3maker {
-            match Self::init_or_update_y3maker(&project.project_path, source, true) {
+            match Self::sync_project_from_hub_or_remote(
+                &project.project_path,
+                source.y3maker_url(),
+                true,
+            ) {
                 Ok(s) => s,
-                Err(e) => format!("failed: {}", e),
+                Err(_) => match Self::init_or_update_y3maker(&project.project_path, source, true) {
+                    Ok(s) => s,
+                    Err(e) => format!("failed: {}", e),
+                },
             }
         } else {
             Self::inspect_y3maker_status(&project.project_path)
@@ -207,6 +346,44 @@ impl ProjectInitializer {
             y3maker_status,
             copied_files,
         })
+    }
+
+    /// 查找本机同级项目下已存在的 `script/y3` (`y3-lualib`) 作为离线/高速回退源
+    fn find_local_cached_y3_lualib(current_project_path: &Path) -> Option<PathBuf> {
+        let parent = current_project_path.parent()?;
+        for entry in fs::read_dir(parent).ok()?.flatten() {
+            let p = entry.path();
+            if p == current_project_path || !p.is_dir() {
+                continue;
+            }
+            let maps_dir = p.join("maps");
+            if let Ok(maps) = fs::read_dir(maps_dir) {
+                for m in maps.flatten() {
+                    let candidate = m.path().join("script").join("y3");
+                    if candidate.join("init.lua").is_file() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+        for entry in WalkDir::new(src).min_depth(1).into_iter().flatten() {
+            if let Ok(rel) = entry.path().strip_prefix(src) {
+                let target = dst.join(rel);
+                if entry.file_type().is_dir() {
+                    fs::create_dir_all(&target)?;
+                } else if entry.file_type().is_file() {
+                    if let Some(p) = target.parent() {
+                        fs::create_dir_all(p)?;
+                    }
+                    fs::copy(entry.path(), &target)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 检查 `.y3maker` 目录状态：`"managed"` / `"foreign"` / `"partial"` / `"missing"`

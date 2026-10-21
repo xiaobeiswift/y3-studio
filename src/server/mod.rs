@@ -142,8 +142,10 @@ impl ToolDispatcher {
                 );
                 let ed = self.manager.editor_env();
                 let ctx = ws.context.read().clone();
-                let report =
-                    ProjectInitializer::init_map(&ctx, map_name, repo_source, ed.as_ref(), true)?;
+                let map_owned = map_name.map(|s| s.to_string());
+                let report = tokio::task::spawn_blocking(move || {
+                    ProjectInitializer::init_map(&ctx, map_owned.as_deref(), repo_source, ed.as_ref(), true)
+                }).await??;
                 Ok(serde_json::to_value(report)?)
             }
             "get_y3maker_hub" => {
