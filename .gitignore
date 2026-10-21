@@ -1,0 +1,8 @@
+/target/
+/y3-helper-vscode/
+*.old
+*.log
+*.bak
+y3-helper.exe.WebView2/
+WebView2Loader.dll
+/y3-helper.exe

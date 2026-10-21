@@ -1,0 +1,2071 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Y3-Helper Studio — 多项目·多地图并发工作台</title>
+  <style>
+    :root {
+      --bg-void: #08090d;
+      --bg-base: #0c0e14;
+      --bg-rail: #0f1219;
+      --bg-drawer: #12151e;
+      --bg-surface: #161a26;
+      --bg-surface-hover: #1c2130;
+      --bg-elevated: #202637;
+      --bg-code: #090b10;
+
+      --border-subtle: rgba(255, 255, 255, 0.06);
+      --border-default: rgba(255, 255, 255, 0.09);
+      --border-strong: rgba(255, 255, 255, 0.15);
+      --border-accent: rgba(99, 102, 241, 0.55);
+
+      --text-primary: #f3f5f8;
+      --text-secondary: #9ba3b4;
+      --text-muted: #636b7e;
+
+      --accent-primary: #6366f1;
+      --accent-primary-glow: rgba(99, 102, 241, 0.22);
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-emerald-glow: rgba(16, 185, 129, 0.18);
+      --accent-amber: #f59e0b;
+      --accent-rose: #f43f5e;
+
+      --radius-sm: 6px;
+      --radius-md: 9px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+
+      --shadow-card: 0 4px 20px -2px rgba(0, 0, 0, 0.45), inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+      --shadow-active: 0 8px 28px -4px rgba(99, 102, 241, 0.25), inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.12);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.24);
+    }
+
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      height: 100vh;
+      width: 100vw;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+
+    svg.icon {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+      stroke-width: 1.85;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      flex-shrink: 0;
+    }
+    svg.icon-lg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* 主三栏骨架：左(一级:项目列表) -> 中(二级:当前项目所属工具) -> 右(三级:工具工作台) */
+    .app-shell {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 310px 216px 1fr;
+      overflow: hidden;
+    }
+
+    /* 1. 最左侧一级主栏：项目列表与引擎环境 (Primary Project Sidebar) */
+    .project-drawer {
+      background: var(--bg-rail);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* 2. 中间二级从属栏：当前选中项目的专属工具栏 (Project Tool Rail) */
+    .nav-rail {
+      background: var(--bg-drawer);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px;
+      gap: 16px;
+    }
+
+    .scope-box {
+      background: rgba(99, 102, 241, 0.08);
+      border: 1px solid rgba(99, 102, 241, 0.28);
+      border-radius: var(--radius-md);
+      padding: 10px 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .scope-box.empty {
+      background: rgba(255, 255, 255, 0.02);
+      border-color: var(--border-subtle);
+    }
+    .scope-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #a5b4fc;
+    }
+    .scope-box.empty .scope-label {
+      color: var(--text-muted);
+    }
+    .scope-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .scope-sub {
+      font-size: 11px;
+      color: #6ee7b7;
+      font-family: "JetBrains Mono", Consolas, monospace;
+    }
+
+    .nav-item.disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+    }
+    .nav-item.disabled:hover {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+
+    .brand-header {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 2px 6px;
+    }
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #6366f1 0%, #3b82f6 55%, #06b6d4 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+      color: #fff;
+    }
+    .brand-title {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #fff;
+      line-height: 1.2;
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .nav-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .nav-group-label {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      padding: 0 10px 6px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 11px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      border: 1px solid transparent;
+    }
+    .nav-item:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .nav-item.active {
+      color: #fff;
+      background: linear-gradient(90deg, rgba(99, 102, 241, 0.18) 0%, rgba(99, 102, 241, 0.05) 100%);
+      border-color: rgba(99, 102, 241, 0.28);
+      font-weight: 600;
+    }
+    .nav-item.active::before {
+      content: "";
+      position: absolute;
+      left: -1px;
+      top: 8px;
+      bottom: 8px;
+      width: 3px;
+      border-radius: 0 4px 4px 0;
+      background: var(--accent-primary);
+      box-shadow: 0 0 8px var(--accent-primary);
+    }
+
+    .rail-footer {
+      margin-top: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .engine-card {
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 11px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .engine-status-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent-emerald);
+      box-shadow: 0 0 0 3px var(--accent-emerald-glow);
+      display: inline-block;
+    }
+    .pulse-dot.off {
+      background: var(--accent-rose);
+      box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.2);
+    }
+    .engine-path {
+      font-size: 10.5px;
+      color: var(--text-muted);
+      font-family: "JetBrains Mono", Consolas, monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* 2. 次左侧：多项目与子地图抽屉 (Project Drawer) */
+    .project-drawer {
+      background: var(--bg-drawer);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .drawer-header {
+      padding: 16px 14px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .drawer-title-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .drawer-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .count-pill {
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+
+    .drawer-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .proj-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 12px;
+      transition: all 0.18s ease;
+      box-shadow: var(--shadow-card);
+      position: relative;
+    }
+    .proj-item:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-surface-hover);
+    }
+    .proj-item.active {
+      background: linear-gradient(180deg, rgba(99, 102, 241, 0.11) 0%, rgba(22, 26, 38, 0.95) 100%);
+      border-color: var(--border-accent);
+      box-shadow: var(--shadow-active);
+    }
+    .proj-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      margin-bottom: 5px;
+    }
+    .proj-title {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .tcp-badge {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 10.5px;
+      padding: 1px 6px;
+      border-radius: 5px;
+      background: rgba(59, 130, 246, 0.14);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+    }
+    .proj-dir {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: "JetBrains Mono", Consolas, monospace;
+      word-break: break-all;
+      margin-bottom: 10px;
+      line-height: 1.4;
+      user-select: text;
+    }
+    .submap-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-bottom: 10px;
+    }
+    .submap-pill {
+      font-size: 11.5px;
+      padding: 3.5px 9px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .submap-pill:hover {
+      color: #fff;
+      border-color: var(--border-strong);
+    }
+    .submap-pill.current {
+      background: var(--accent-emerald-glow);
+      border-color: rgba(16, 185, 129, 0.45);
+      color: #6ee7b7;
+      font-weight: 600;
+    }
+    .proj-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding-top: 8px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    /* 3. 右侧主舞台 (Main Stage) */
+    .main-stage {
+      display: flex;
+      flex-direction: column;
+      background: radial-gradient(circle at 80% 0%, rgba(99, 102, 241, 0.07), transparent 45%), var(--bg-base);
+      overflow: hidden;
+    }
+
+    /* 顶部玻璃态全局命令栏 */
+    .command-bar {
+      height: 60px;
+      padding: 0 22px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(15, 18, 25, 0.75);
+      backdrop-filter: blur(12px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-shrink: 0;
+    }
+    .breadcrumb {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+    .breadcrumb-target {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      padding: 5px 12px;
+      border-radius: var(--radius-md);
+      font-weight: 600;
+      color: #fff;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    }
+    .command-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
+    }
+
+    /* 通用现代按钮系统 */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 6.5px 12px;
+      border-radius: var(--radius-sm);
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--text-primary);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      cursor: pointer;
+      transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      white-space: nowrap;
+    }
+    .btn:hover {
+      background: var(--bg-elevated);
+      border-color: var(--border-strong);
+      transform: translateY(-0.5px);
+    }
+    .btn:active {
+      transform: translateY(0);
+    }
+    .btn-xs {
+      padding: 4px 8px;
+      font-size: 11.5px;
+      border-radius: 5px;
+    }
+    .btn-primary {
+      background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 2px 10px rgba(99, 102, 241, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(180deg, #7174f7 0%, #5b52f0 100%);
+      border-color: rgba(255, 255, 255, 0.28);
+    }
+    .btn-emerald {
+      background: linear-gradient(180deg, #10b981 0%, #059669 100%);
+      border-color: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    }
+    .btn-emerald:hover {
+      background: linear-gradient(180deg, #18c98f 0%, #09a875 100%);
+    }
+    .btn-rose {
+      background: rgba(244, 63, 94, 0.12);
+      border-color: rgba(244, 63, 94, 0.32);
+      color: #fda4af;
+    }
+    .btn-rose:hover {
+      background: rgba(244, 63, 94, 0.22);
+      border-color: rgba(244, 63, 94, 0.5);
+      color: #fff;
+    }
+
+    .input, select.input {
+      background: var(--bg-code);
+      border: 1px solid var(--border-default);
+      color: var(--text-primary);
+      padding: 6.5px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 12.5px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .input:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 2px var(--accent-primary-glow);
+    }
+
+    /* 舞台内容区 */
+    .stage-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 22px;
+    }
+    .tab-pane {
+      display: none;
+      flex-direction: column;
+      gap: 18px;
+      animation: fadeIn 0.18s ease-out;
+    }
+    .tab-pane.active {
+      display: flex;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* 现代高光卡片 */
+    .surface-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 16px 18px;
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .card-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* 三大 MCP 网关矩阵 */
+    .mcp-matrix {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+    .mcp-node {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(0, 0, 0, 0.18) 100%);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: 13px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .mcp-node-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .mcp-node-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: #fff;
+    }
+    .mcp-tag-online {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: var(--accent-emerald-glow);
+      color: #6ee7b7;
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+    .mcp-endpoint {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 11.5px;
+      color: #93c5fd;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 4px 8px;
+      border-radius: 5px;
+      border: 1px solid var(--border-subtle);
+      user-select: text;
+    }
+    .mcp-desc {
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .grid-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 16px;
+    }
+
+    pre.code-terminal, textarea.code-editor {
+      background: var(--bg-code);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      padding: 12px 14px;
+      color: #d8dee9;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      overflow: auto;
+      user-select: text;
+    }
+    textarea.code-editor {
+      width: 100%;
+      resize: vertical;
+      outline: none;
+    }
+    textarea.code-editor:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 2px var(--accent-primary-glow);
+    }
+
+    /* 物编列表与详情分栏 */
+    .table-split {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 16px;
+      min-height: 480px;
+    }
+    .obj-list-box {
+      background: var(--bg-code);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius-md);
+      overflow-y: auto;
+      max-height: 460px;
+    }
+    .obj-row {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12.5px;
+      transition: background 0.12s;
+    }
+    .obj-row:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .obj-row.active {
+      background: rgba(99, 102, 241, 0.18);
+      border-left: 3px solid var(--accent-primary);
+      color: #fff;
+      font-weight: 600;
+    }
+    .obj-key {
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* 底部极简状态栏 */
+    .statusbar {
+      height: 28px;
+      background: var(--bg-void);
+      border-top: 1px solid var(--border-subtle);
+      padding: 0 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+    }
+    #statusMsg {
+      color: #93c5fd;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-shell">
+    <!-- 1. 最左侧一级主栏：Y3 项目列表与全局引擎设置 -->
+    <section class="project-drawer">
+      <div class="drawer-header">
+        <div class="brand-header" style="padding:0 0 6px 0;border-bottom:1px solid var(--border-subtle)">
+          <div class="brand-logo">
+            <svg class="icon icon-lg" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+          </div>
+          <div>
+            <div class="brand-title">Y3 Studio</div>
+            <div class="brand-sub">多项目·多地图并发工作台</div>
+          </div>
+        </div>
+
+        <div class="drawer-title-row" style="padding-top:2px">
+          <div class="drawer-title">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+            <span>1. 挂载项目列表</span>
+            <span class="count-pill" id="projCount">0</span>
+          </div>
+          <button class="btn btn-xs btn-primary" onclick="pickAndAddProject()">
+            <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>添加项目</span>
+          </button>
+        </div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="manualProjPath" class="input" style="flex:1" placeholder="粘贴项目路径回车添加..." onkeydown="if(event.key==='Enter') addManualProject()" />
+          <button class="btn btn-xs" onclick="addManualProject()">挂载</button>
+        </div>
+      </div>
+
+      <div class="drawer-list" id="projectList">
+        <!-- 动态渲染多项目卡片 -->
+      </div>
+
+      <div style="padding:12px;border-top:1px solid var(--border-subtle);display:flex;flex-direction:column;gap:8px;background:rgba(0,0,0,0.18)">
+        <div class="engine-card">
+          <div class="engine-status-row">
+            <span style="display:flex;align-items:center;gap:7px">
+              <span class="pulse-dot" id="editorDot"></span>
+              <span>Y3 编辑器引擎</span>
+            </span>
+            <button class="btn btn-xs" onclick="pickEditorPath()" title="选择 Editor.exe">配置</button>
+          </div>
+          <div class="engine-path" id="editorPathText">正在探测路径...</div>
+        </div>
+
+        <button class="btn btn-primary" style="width:100%" onclick="copyMcpConfig()">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          <span>复制三合一 MCP 配置</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- 2. 中间二级从属栏：当前选中项目下的专属工具栏 -->
+    <aside class="nav-rail">
+      <div class="scope-box empty" id="toolScopeCard">
+        <div class="scope-label" id="toolScopeLabel">2. 当前选中项目</div>
+        <div class="scope-name" id="toolScopeName">未选择项目</div>
+        <div class="scope-sub" id="toolScopeSub">请先在左侧添加/选择</div>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-label">当前项目所属工具</div>
+        <div class="nav-item" data-proj-tool="1" id="nav-y3maker" onclick="switchTab('tab-y3maker', this)">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+          <span>AI 技能库 (.y3maker)</span>
+        </div>
+        <div class="nav-item" data-proj-tool="1" id="nav-console" onclick="switchTab('tab-console', this)">
+          <svg class="icon" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+          <span>调试控制台 & Lua</span>
+        </div>
+        <div class="nav-item" data-proj-tool="1" id="nav-table" onclick="switchTab('tab-table', this)">
+          <svg class="icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+          <span>物编工作台 & 导表</span>
+        </div>
+        <div class="nav-item" data-proj-tool="1" id="nav-ui-meta" onclick="switchTab('tab-ui-meta', this)">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+          <span>UI 画布树 & Meta</span>
+        </div>
+        <div class="nav-item" data-proj-tool="1" id="nav-eca-gmp" onclick="switchTab('tab-eca-gmp', this)">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+          <span>ECA 编译 & GMP</span>
+        </div>
+        <div class="nav-item" data-proj-tool="1" id="nav-toolbox" onclick="switchTab('tab-toolbox', this)">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+          <span>工程高级工具箱</span>
+        </div>
+      </div>
+
+      <div class="nav-group" style="padding-top:8px;border-top:1px solid var(--border-subtle)">
+        <div class="nav-group-label">全局总览与网关</div>
+        <div class="nav-item active" id="nav-multi" onclick="switchTab('tab-multi', this)">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect></svg>
+          <span>多项目并发 & MCP</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 3. 右侧主舞台 -->
+    <main class="main-stage">
+      <!-- 顶部玻璃态命令栏 -->
+      <header class="command-bar">
+        <div class="breadcrumb">
+          <span style="color:var(--text-muted)">目标上下文</span>
+          <div class="breadcrumb-target" id="curTargetBadge">未选择项目</div>
+        </div>
+
+        <div class="command-actions">
+          <button class="btn btn-emerald" onclick="openLaunchModal()">
+            <svg class="icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            <span>启动游戏</span>
+          </button>
+          <button class="btn btn-primary" onclick="callToolAndToast('launch_editor', {})">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+            <span>打开编辑器</span>
+          </button>
+          <button class="btn" onclick="callToolAndToast('reload_lua', {})">
+            <svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            <span>热重载 (.rd)</span>
+          </button>
+          <button class="btn" onclick="callToolAndToast('reload_editor_table', {})">物编热更</button>
+          <button class="btn" onclick="callToolAndToast('reload_trigger', {})">触发器热更</button>
+          <button class="btn" onclick="callToolAndToast('quick_restart', {})">重启 (.rr)</button>
+          <button class="btn btn-rose" onclick="callToolAndToast('kill_game', {killAll:false})">结束游戏</button>
+          <button class="btn btn-xs" onclick="callToolAndToast('open_in_explorer', {})" title="在资源管理器中打开">目录</button>
+          <button class="btn btn-xs" onclick="refreshAll()" title="刷新全局状态">刷新</button>
+        </div>
+      </header>
+
+      <div class="stage-body">
+        <!-- Tab 1: 多项目并发 & 三大 MCP 智能路由网关 -->
+        <section class="tab-pane active" id="tab-multi">
+          <div class="surface-card">
+            <div class="card-header">
+              <div class="card-title">
+                <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                <span>三合一 MCP 智能路由网关 (单端口并发托管所有项目、编辑器实例与游戏运行时)</span>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-xs" onclick="refreshEditorMcps()">扫描在线编辑器</button>
+                <button class="btn btn-xs btn-primary" onclick="copyMcpConfig()">复制三合一 MCP 配置</button>
+              </div>
+            </div>
+
+            <div class="mcp-matrix">
+              <div class="mcp-node">
+                <div class="mcp-node-top">
+                  <span class="mcp-node-name">1. y3-helper 总控网关</span>
+                  <span class="mcp-tag-online">ACTIVE</span>
+                </div>
+                <div class="mcp-endpoint" id="helperMcpGatewayUrl">http://127.0.0.1:8768/mcp</div>
+                <div class="mcp-desc">单实例并发控制所有挂载项目与子地图（支持传 <code>projectPath</code> 与 <code>mapName</code>）。</div>
+              </div>
+
+              <div class="mcp-node">
+                <div class="mcp-node-top">
+                  <span class="mcp-node-name">2. y3editor 多编辑器网关</span>
+                  <span class="mcp-tag-online">ROUTER</span>
+                </div>
+                <div class="mcp-endpoint" id="editorMcpGatewayUrl">http://127.0.0.1:8768/y3editor/mcp</div>
+                <div class="mcp-desc">同时打开多个 Y3 编辑器窗口时，自动按目标项目匹配并转发到对应编辑器的 <code>8765+</code> 端口。</div>
+              </div>
+
+              <div class="mcp-node">
+                <div class="mcp-node-top">
+                  <span class="mcp-node-name">3. y3runtime 常驻自动化网关</span>
+                  <span class="mcp-tag-online">ALWAYS-ON</span>
+                </div>
+                <div class="mcp-endpoint" id="runtimeMcpGatewayUrl">http://127.0.0.1:8768/y3runtime/mcp</div>
+                <div class="mcp-desc">永不掉线、免手动刷新连接；支持原生 <code>8767+</code> 转发与多项目/多开窗口专属 Lua UI 点击触发双引擎。</div>
+              </div>
+            </div>
+
+            <div id="runningEditorMcpsBox" style="display:flex;gap:10px;flex-wrap:wrap;padding-top:4px"></div>
+          </div>
+
+          <div class="grid-cards" id="multiOverviewGrid"></div>
+        </section>
+
+        <!-- Tab 2: 调试控制台 & Lua & UI 点击自动化 -->
+        <section class="tab-pane" id="tab-console">
+          <div class="grid-2">
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">远程 Lua 执行 & UI 自动化点击 (y3runtime)</div>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select id="clientSlotSelect" class="input" style="width:140px;padding:4px 8px">
+                    <option value="">默认游戏窗口</option>
+                  </select>
+                  <button class="btn btn-xs" onclick="captureGameScreenshot()">截图</button>
+                </div>
+              </div>
+
+              <div id="clientSlotsList" style="font-size:12px;color:var(--text-secondary)">暂无已连接的游戏客户端窗口</div>
+
+              <div style="background:rgba(0,0,0,0.22);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <span style="font-size:12px;font-weight:600;color:var(--text-secondary)">UI 点击测试:</span>
+                <input type="text" id="uiTouchPathInput" class="input" style="flex:1;min-width:160px" value="WuxiaHUD.quest.button_quest" placeholder="输入控件路径 ui_path..." />
+                <select id="uiTouchBtnSelect" class="input" style="width:76px">
+                  <option value="左键">左键</option>
+                  <option value="右键">右键</option>
+                </select>
+                <button class="btn btn-xs btn-primary" onclick="triggerUiTouchNow()">触发点击</button>
+              </div>
+
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button class="btn btn-xs" onclick="setLuaPreset('print(\\'Hello from Y3 Studio!\\')')">示例: 打印日志</button>
+                <button class="btn btn-xs" onclick="setLuaPreset('for k, v in pairs(y3 or clicli or {}) do print(k, v) end')">示例: 查看框架表</button>
+                <button class="btn btn-xs btn-primary" style="margin-left:auto" onclick="runLuaCode()">发送并执行 Lua (Ctrl+Enter)</button>
+              </div>
+
+              <textarea id="luaCodeInput" class="code-editor" style="min-height:130px">print("Hello from Y3 Studio!")</textarea>
+              <pre id="luaExecResult" class="code-terminal" style="max-height:150px">执行返回结果将显示在这里...</pre>
+              <div id="screenshotBox" style="display:none">
+                <img id="screenshotImg" style="max-width:100%;border-radius:var(--radius-md);border:1px solid var(--border-default)" />
+              </div>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">游戏运行实时日志流</div>
+                <div style="display:flex;gap:10px;align-items:center">
+                  <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:5px;cursor:pointer">
+                    <input type="checkbox" id="autoPollLogs" checked /> 自动刷新
+                  </label>
+                  <button class="btn btn-xs" onclick="loadGameLogs()">刷新日志</button>
+                </div>
+              </div>
+              <pre id="gameLogsView" class="code-terminal" style="flex:1;min-height:420px;max-height:560px">暂无游戏运行日志...</pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 3: 物编工作台 & Excel 导表 -->
+        <section class="tab-pane" id="tab-table">
+          <div class="surface-card" style="padding:12px 16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <span style="font-size:12.5px;font-weight:600">物编表:</span>
+                <select id="tableTypeSelect" class="input" style="width:150px" onchange="loadTableList()">
+                  <option value="unit">单位 (unit)</option>
+                  <option value="ability">技能 (ability)</option>
+                  <option value="modifier">魔法效果 (modifier)</option>
+                  <option value="item">物品 (item)</option>
+                  <option value="projectile">投射物 (projectile)</option>
+                  <option value="destructible">可破坏物 (destructible)</option>
+                  <option value="decoration">装饰物 (decoration)</option>
+                  <option value="sound">声音 (sound)</option>
+                  <option value="technology">科技 (technology)</option>
+                </select>
+                <input type="text" id="tableSearchInput" class="input" style="width:180px" placeholder="搜索名称或 Key..." oninput="renderTableItems()" />
+                <button class="btn btn-xs" onclick="loadTableList()">刷新</button>
+                <button class="btn btn-xs btn-primary" onclick="prepareNewObject()">+ 新建物编</button>
+              </div>
+
+              <div style="display:flex;gap:6px;align-items:center">
+                <span style="font-size:12px;color:var(--text-secondary)">Excel 导表:</span>
+                <input type="text" id="excelPathInput" class="input" style="width:200px" placeholder="选择 .xlsx 文件..." />
+                <button class="btn btn-xs" onclick="pickExcelFile()">浏览</button>
+                <input type="text" id="excelSheetInput" class="input" style="width:86px" placeholder="Sheet(可选)" />
+                <button class="btn btn-xs btn-emerald" onclick="importExcelToTable()">导入 Excel</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="table-split">
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">条目列表 (<span id="tableItemCount">0</span>)</div>
+              </div>
+              <div class="obj-list-box" id="tableObjList"></div>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">物编属性 JSON 编辑器</div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn btn-xs btn-rose" onclick="deleteCurrentObject()">删除该物编</button>
+                  <button class="btn btn-xs btn-primary" onclick="saveCurrentObject()">保存物编修改</button>
+                </div>
+              </div>
+              <div class="grid-2" style="gap:12px">
+                <div>
+                  <label style="font-size:11.5px;color:var(--text-secondary);display:block;margin-bottom:4px">物编 Key (留空自动分配新 ID)</label>
+                  <input type="number" id="objKeyInput" class="input" style="width:100%" placeholder="如 134217729" />
+                </div>
+                <div>
+                  <label style="font-size:11.5px;color:var(--text-secondary);display:block;margin-bottom:4px">物编中文名称 (自动同步 zhlanguage.json)</label>
+                  <input type="text" id="objNameInput" class="input" style="width:100%" placeholder="输入中文名称" />
+                </div>
+              </div>
+              <div>
+                <label style="font-size:11.5px;color:var(--text-secondary);display:block;margin-bottom:4px">字段 JSON (fields):</label>
+                <textarea id="objFieldsArea" class="code-editor" style="min-height:240px">{}</textarea>
+              </div>
+              <div>
+                <label style="font-size:11.5px;color:var(--text-secondary);display:block;margin-bottom:4px">自定义属性 KV JSON (kv):</label>
+                <textarea id="objKvArea" class="code-editor" style="min-height:70px">{}</textarea>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 4: UI 画布树 & Meta -->
+        <section class="tab-pane" id="tab-ui-meta">
+          <div class="grid-2">
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">子地图 UI 画布节点树</div>
+                <div style="display:flex;gap:6px">
+                  <input type="text" id="uiNodePathInput" class="input" style="width:140px" placeholder="画板路径(可选)" />
+                  <button class="btn btn-xs btn-primary" onclick="loadUiCanvasTree()">读取 UI 树</button>
+                </div>
+              </div>
+              <pre id="uiCanvasTreeOutput" class="code-terminal" style="flex:1;min-height:430px">点击「读取 UI 树」查看当前子地图的完整 UI 层级、控件类型与 UID...</pre>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">自定义定义 & Meta 枚举代码生成</div>
+                <div style="display:flex;gap:6px">
+                  <button class="btn btn-xs" onclick="loadCustomDefines()">读取自定义定义</button>
+                  <button class="btn btn-xs btn-emerald" onclick="generateMetaNow()">生成 Meta 代码</button>
+                </div>
+              </div>
+              <pre id="metaOutputView" class="code-terminal" style="flex:1;min-height:430px">点击「读取自定义定义」或「生成 Meta 代码」查看输出...</pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 5: ECA 编译 & GMP 打包 -->
+        <section class="tab-pane" id="tab-eca-gmp">
+          <div class="grid-2">
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">ECA 触发器转 Lua 编译器</div>
+                <button class="btn btn-xs btn-primary" onclick="compileEcaNow()">立即编译当前地图 ECA</button>
+              </div>
+              <pre id="ecaCompileOutput" class="code-terminal" style="flex:1;min-height:410px">点击上方按钮将当前子地图的触发器编译为 y3-eca/*.lua...</pre>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">二进制 .gmp 地图文件离线打包器</div>
+                <button class="btn btn-xs btn-emerald" onclick="saveGmpNow()">重建并保存 .gmp</button>
+              </div>
+              <div style="display:flex;gap:14px;font-size:12px;color:var(--text-secondary)">
+                <label><input type="checkbox" id="gmpPrefabs" checked /> 更新物编 (Prefabs)</label>
+                <label><input type="checkbox" id="gmpUi" checked /> 更新界面 (UI)</label>
+                <label><input type="checkbox" id="gmpZh" checked /> 更新中文语言表</label>
+                <label><input type="checkbox" id="gmpUs" checked /> 更新英文语言表</label>
+              </div>
+              <pre id="gmpSaveOutput" class="code-terminal" style="flex:1;min-height:380px">点击「重建并保存 .gmp」执行离线打包...</pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab 6: 工程高级工具箱 -->
+        <section class="tab-pane" id="tab-toolbox">
+          <div class="grid-cards">
+            <div class="surface-card">
+              <div class="card-header"><div class="card-title">初始化新地图工程 (y3-lualib)</div></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="initRepoSource" class="input" style="flex:1">
+                  <option value="gitee">Gitee 镜像 (推荐)</option>
+                  <option value="github">GitHub 官方源</option>
+                  <option value="english">English 模板</option>
+                </select>
+                <button class="btn btn-primary" onclick="callToolAndShowBox('init_project', {repoSource: document.getElementById('initRepoSource').value}, 'toolboxOutput')">执行初始化</button>
+              </div>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-header"><div class="card-title">全局脚本 & 本地云脚本调试</div></div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-primary" onclick="callToolAndShowBox('enable_global_script', {}, 'toolboxOutput')">启用 global_script</button>
+                <button class="btn btn-emerald" onclick="callToolAndShowBox('sync_cloud_script', {enable:true, waitDebugger:false}, 'toolboxOutput')">启用云脚本调试</button>
+                <button class="btn btn-rose" onclick="callToolAndShowBox('sync_cloud_script', {enable:false}, 'toolboxOutput')">禁用云脚本</button>
+              </div>
+            </div>
+
+            <div class="surface-card">
+              <div class="card-header"><div class="card-title">插件管理、API 文档与网络测试服</div></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <button class="btn btn-xs" onclick="callToolAndShowBox('plugin_manage', {action:'init'}, 'toolboxOutput')">初始化插件</button>
+                <button class="btn btn-xs" onclick="callToolAndShowBox('plugin_manage', {action:'run', func:'onSave'}, 'toolboxOutput')">运行 onSave</button>
+                <button class="btn btn-xs" onclick="callToolAndShowBox('generate_lua_doc', {}, 'toolboxOutput')">生成 API.md</button>
+                <button class="btn btn-xs btn-primary" onclick="callToolAndShowBox('read_problems_lua', {}, 'toolboxOutput')">Lua 语法诊断</button>
+                <button class="btn btn-xs btn-emerald" onclick="callToolAndShowBox('start_network_server', {}, 'toolboxOutput')">启动测试服 (25895/25896)</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="surface-card">
+            <div class="card-header"><div class="card-title">工具箱执行输出</div></div>
+            <pre id="toolboxOutput" class="code-terminal" style="min-height:220px">点击上方任意工具按钮查看执行输出...</pre>
+          </div>
+        </section>
+
+        <!-- Tab 7: AI 技能库 (.y3maker) & 智能体装配中心 -->
+        <section class="tab-pane" id="tab-y3maker">
+          <div class="grid-2">
+            <!-- 左卡：.y3maker 技能库状态与一键拉取/更新 -->
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>
+                  <span>1. 官方 .y3maker 技能仓库管理 (两级缓存架构)</span>
+                </div>
+                <span class="mcp-tag-online" id="y3makerStatusBadge">检测中...</span>
+              </div>
+
+              <div id="y3makerStatsBox" style="background:rgba(0,0,0,0.22);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:12px;font-size:12.5px;color:var(--text-secondary);line-height:1.65">
+                正在读取当前项目的 .y3maker 技能库状态...
+              </div>
+
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <select id="y3makerRepoSelect" class="input" style="flex:1;min-width:190px" onchange="toggleCustomGitUrlInput()">
+                  <option value="local">⚡ 客户端全局母库极速分发 (0网络等待 · 毫秒级)</option>
+                  <option value="gitee">Gitee 官方镜像在线拉取 (y3-editor/y3-maker-config)</option>
+                  <option value="github">GitHub 官方仓库在线拉取 (y3-editor/y3-maker-config)</option>
+                  <option value="custom">自定义团队/私有 Git 仓库 URL...</option>
+                </select>
+                <button class="btn" onclick="checkY3MakerRemoteUpdate()">检查远程更新</button>
+                <button class="btn btn-primary" onclick="syncY3MakerNow()">
+                  <svg class="icon" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                  <span>拉取 / 同步最新技能库</span>
+                </button>
+              </div>
+
+              <div id="customGitUrlRow" style="display:none">
+                <input type="text" id="y3makerCustomUrlInput" class="input" style="width:100%" placeholder="输入自定义 Git 仓库地址 (如 https://.../y3-maker-config.git)..." />
+              </div>
+
+              <div style="font-size:11.5px;color:var(--text-muted);line-height:1.5">
+                💡 采用<strong>「客户端全局母库 (<code>%APPDATA%\y3-helper\y3maker-hub</code>) + 项目工作区 (<code>.y3maker</code>)」</strong>两级缓存：一次从官方仓库拉取，即可秒级分发给本机所有 Y3 项目；同步后自动剥离 <code>SKILL.md</code> 的 3 字节 UTF-8 BOM 头并维护 <code>.agents/skills</code> 软链。
+              </div>
+            </div>
+
+            <!-- 右卡：一键装配到主流 AI 智能体 -->
+            <div class="surface-card">
+              <div class="card-header">
+                <div class="card-title">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                  <span>2. 一键装配至主流 AI 编程智能体</span>
+                </div>
+                <button class="btn btn-xs btn-emerald" onclick="equipSelectedAgents()">一键装配选中智能体</button>
+              </div>
+
+              <div id="agentTargetsList" style="display:flex;flex-direction:column;gap:8px">
+                <!-- 动态渲染 5 大通用智能体标准目标 -->
+              </div>
+            </div>
+          </div>
+
+          <!-- 底部：已安装 Y3 官方技能矩阵 -->
+          <div class="surface-card">
+            <div class="card-header">
+              <div class="card-title">
+                <span>3. 当前项目已安装官方 Y3 AI 技能矩阵 (<span id="y3makerSkillCount">0</span> 个技能 · 点击卡片可查看 SKILL.md 详情)</span>
+              </div>
+              <button class="btn btn-xs" onclick="loadY3MakerHub()">刷新状态</button>
+            </div>
+            <div id="y3makerSkillsGrid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(290px, 1fr));gap:10px"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- 技能详情查看弹窗 -->
+  <div id="skillDetailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);backdrop-filter:blur(4px);z-index:1000;align-items:center;justify-content:center">
+    <div class="surface-card" style="width:780px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;background:var(--bg-drawer)">
+      <div class="card-header">
+        <div class="card-title" id="skillDetailTitle">技能详情</div>
+        <button class="btn btn-xs" onclick="document.getElementById('skillDetailModal').style.display='none'">关闭</button>
+      </div>
+      <div id="skillDetailMeta" style="font-size:12px;color:var(--text-secondary)"></div>
+      <pre id="skillDetailContent" class="code-terminal" style="flex:1;max-height:62vh;white-space:pre-wrap"></pre>
+    </div>
+  </div>
+
+  <!-- 启动游戏高级配置弹窗 -->
+  <div id="launchModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.68);backdrop-filter:blur(4px);z-index:999;align-items:center;justify-content:center">
+    <div class="surface-card" style="width:440px;background:var(--bg-drawer)">
+      <div class="card-header">
+        <div class="card-title">启动游戏配置</div>
+        <button class="btn btn-xs" onclick="closeLaunchModal()">关闭</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px;font-size:13px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="chkMultiMode" />
+          <span>启用多开模式 (同时启动多个玩家客户端窗口)</span>
+        </label>
+        <div>
+          <label style="font-size:11.5px;color:var(--text-secondary);display:block;margin-bottom:4px">指定多开玩家 ID (逗号分隔，如 1,2；留空读取 campinfo.json):</label>
+          <input type="text" id="multiPlayersInput" class="input" style="width:100%" placeholder="例如: 1,2" />
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="chkTracy" />
+          <span>启用 Tracy 性能分析器 (--tracy)</span>
+        </label>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+        <button class="btn" onclick="closeLaunchModal()">取消</button>
+        <button class="btn btn-emerald" onclick="confirmLaunchGame()">立即启动</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="statusbar">
+    <div id="statusMsg">就绪 — 支持同一台机器多个 Y3 项目、多张子地图同时并发操作</div>
+    <div>Y3 Studio Standalone Native Client (Tao + Wry Engine)</div>
+  </footer>
+
+  <script>
+    let appState = {
+      activeProjectId: null,
+      activeProjectPath: null,
+      activeMapName: null,
+      projects: [],
+      editor: null,
+      tableItems: []
+    };
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById('statusMsg');
+      el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+      el.style.color = isError ? '#fda4af' : '#93c5fd';
+    }
+
+    async function apiCall(tool, args = {}) {
+      const payloadArgs = { ...args };
+      if (!payloadArgs.projectPath && appState.activeProjectId) {
+        payloadArgs.projectPath = appState.activeProjectId;
+      }
+      if (!payloadArgs.mapName && appState.activeMapName) {
+        payloadArgs.mapName = appState.activeMapName;
+      }
+      const resp = await fetch('/api/call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool, args: payloadArgs })
+      });
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        throw new Error(data.error || `HTTP ${resp.status}`);
+      }
+      return data;
+    }
+
+    async function removeProjectById(projectId, projectPath, ev) {
+      if (ev && ev.stopPropagation) ev.stopPropagation();
+      try {
+        setStatus(`正在移除项目 ${projectId}...`);
+        if (appState.activeProjectId === projectId) {
+          appState.activeProjectId = null;
+          appState.activeProjectPath = null;
+          appState.activeMapName = null;
+        }
+        const res = await apiCall('remove_project', { projectPath: projectId });
+        await refreshAll();
+        saveRecentProjects();
+        setStatus(`已从工作台移除项目: ${projectPath}`);
+        return res;
+      } catch (e) {
+        setStatus(`移除项目失败: ${e.message}`, true);
+      }
+    }
+
+    async function callToolAndToast(tool, args = {}) {
+      try {
+        setStatus(`正在执行 ${tool}...`);
+        const res = await apiCall(tool, args);
+        setStatus(`执行成功 [${tool}]: ${JSON.stringify(res).slice(0, 140)}`);
+        await refreshAll();
+        return res;
+      } catch (e) {
+        setStatus(`执行失败 [${tool}]: ${e.message}`, true);
+      }
+    }
+
+    async function callToolAndShowBox(tool, args, boxId) {
+      const box = document.getElementById(boxId);
+      try {
+        box.textContent = `正在执行 ${tool}...`;
+        const res = await apiCall(tool, args);
+        box.textContent = JSON.stringify(res, null, 2);
+        setStatus(`执行成功 [${tool}]`);
+        await refreshAll();
+      } catch (e) {
+        box.textContent = `执行错误: ${e.message}`;
+        setStatus(`执行失败 [${tool}]: ${e.message}`, true);
+      }
+    }
+
+    async function refreshAll() {
+      try {
+        const resp = await fetch('/api/projects');
+        const data = await resp.json();
+        appState.editor = data.editor;
+        appState.projects = data.projects || [];
+
+        const edDot = document.getElementById('editorDot');
+        const edText = document.getElementById('editorPathText');
+        if (data.editor && data.editor.editor_exe_path) {
+          edDot.className = 'pulse-dot';
+          edText.textContent = data.editor.editor_exe_path;
+          edText.title = data.editor.editor_exe_path;
+        } else {
+          edDot.className = 'pulse-dot off';
+          edText.textContent = '未检测到 Editor.exe';
+        }
+
+        document.getElementById('projCount').textContent = appState.projects.length;
+
+        if (appState.projects.length > 0) {
+          const found = appState.projects.find(p => p.project_id === appState.activeProjectId) || appState.projects[0];
+          appState.activeProjectId = found.project_id;
+          appState.activeProjectPath = found.project_path;
+          if (!appState.activeMapName || !found.maps.some(m => m.name === appState.activeMapName)) {
+            appState.activeMapName = found.current_map_name;
+          }
+        } else {
+          appState.activeProjectId = null;
+          appState.activeProjectPath = null;
+          appState.activeMapName = null;
+        }
+
+        renderSidebarProjects();
+        renderMultiOverview();
+        updateTargetBadge();
+        await updateCurrentGameClients();
+        await loadGameLogs();
+        await refreshEditorMcps();
+      } catch (e) {
+        setStatus(`刷新状态失败: ${e.message}`, true);
+      }
+    }
+
+    async function refreshEditorMcps() {
+      const box = document.getElementById('runningEditorMcpsBox');
+      if (!box) return;
+      try {
+        const res = await apiCall('discover_editor_mcps', {});
+        const editors = res.editors || [];
+        if (editors.length === 0) {
+          box.innerHTML = `<span style="font-size:12px;color:var(--text-muted)">当前暂无运行中的 Y3 编辑器实例（点击右上角「打开编辑器」启动后，编辑器内置的 <code>y3editor</code> MCP 会自动挂载至此处）</span>`;
+          return;
+        }
+        box.innerHTML = editors.map(ed => {
+          const projName = (ed.project_path || '').split(/[\\/]/).pop() || ed.project_path;
+          return `
+            <div style="background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.28);border-radius:var(--radius-md);padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex:1;min-width:420px">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;font-weight:600;color:#6ee7b7;font-size:12.5px">
+                  <span class="pulse-dot"></span>
+                  <span>在线编辑器实例: ${projName} / ${ed.map_name}</span>
+                  <span class="tcp-badge">:${ed.port}/mcp ${ed.pid ? `(PID ${ed.pid})` : ''}</span>
+                </div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:3px">${ed.project_path} (${ed.width}x${ed.height})</div>
+              </div>
+              <div style="display:flex;gap:6px">
+                <button class="btn btn-xs" onclick="callToolAndToast('call_y3editor_tool', {editorPort:${ed.port}, toolName:'hotfix_object_editor', toolArgs:{}})">热更物编</button>
+                <button class="btn btn-xs" onclick="callToolAndToast('call_y3editor_tool', {editorPort:${ed.port}, toolName:'hotfix_ui_editor', toolArgs:{}})">热更UI</button>
+                <button class="btn btn-xs btn-primary" onclick="callToolAndToast('call_y3editor_tool', {editorPort:${ed.port}, toolName:'save_editor', toolArgs:{}})">保存编辑器</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        box.innerHTML = `<span style="font-size:12px;color:#fda4af">探测编辑器 MCP 失败: ${e.message}</span>`;
+      }
+    }
+
+    function updateTargetBadge() {
+      const badge = document.getElementById('curTargetBadge');
+      const scopeCard = document.getElementById('toolScopeCard');
+      const scopeLabel = document.getElementById('toolScopeLabel');
+      const scopeName = document.getElementById('toolScopeName');
+      const scopeSub = document.getElementById('toolScopeSub');
+      const projTools = document.querySelectorAll('[data-proj-tool="1"]');
+
+      if (!appState.activeProjectPath) {
+        badge.textContent = '未选择项目（请先在最左侧添加项目）';
+        if (scopeCard) {
+          scopeCard.classList.add('empty');
+          scopeLabel.textContent = '2. 当前选中项目';
+          scopeName.textContent = '未选择项目';
+          scopeSub.textContent = '请先在左侧添加/选择';
+        }
+        projTools.forEach(el => el.classList.add('disabled'));
+        const multiNav = document.getElementById('nav-multi');
+        if (multiNav && !multiNav.classList.contains('active')) {
+          switchTab('tab-multi', multiNav);
+        }
+        return;
+      }
+
+      const proj = appState.projects.find(p => p.project_id === appState.activeProjectId);
+      const name = proj ? proj.project_path.split(/[\\/]/).pop() : appState.activeProjectId;
+      const mapName = appState.activeMapName || 'EntryMap';
+      const port = proj ? proj.console_port : '-';
+
+      badge.innerHTML = `<span>${name}</span> <span style="color:var(--text-muted)">/</span> <span style="color:#6ee7b7">${mapName}</span> <span class="tcp-badge">TCP :${port}</span>`;
+      if (scopeCard) {
+        scopeCard.classList.remove('empty');
+        scopeLabel.textContent = '2. 所属项目与子地图';
+        scopeName.textContent = name;
+        scopeSub.textContent = `${mapName} · TCP :${port}`;
+      }
+      projTools.forEach(el => el.classList.remove('disabled'));
+      if (!appState.initialTabSet) {
+        appState.initialTabSet = true;
+        const consoleNav = document.getElementById('nav-console');
+        if (consoleNav) switchTab('tab-console', consoleNav);
+      }
+    }
+
+    function selectProjectAndMap(projectId, projectPath, mapName) {
+      appState.activeProjectId = projectId;
+      appState.activeProjectPath = projectPath;
+      appState.activeMapName = mapName;
+      apiCall('switch_map', { projectPath: projectId, mapName }).catch(() => {});
+      renderSidebarProjects();
+      renderMultiOverview();
+      updateTargetBadge();
+      updateCurrentGameClients();
+      loadGameLogs();
+      if (document.getElementById('tab-table').classList.contains('active')) {
+        loadTableList();
+      } else if (document.getElementById('tab-y3maker').classList.contains('active')) {
+        loadY3MakerHub();
+      }
+      setStatus(`已切换当前操作项目至: ${projectPath} [${mapName}]`);
+    }
+
+    function renderSidebarProjects() {
+      const container = document.getElementById('projectList');
+      if (appState.projects.length === 0) {
+        container.innerHTML = `
+          <div style="text-align:center;padding:36px 14px;color:var(--text-muted);font-size:12.5px">
+            <p style="margin-bottom:12px">尚未挂载任何 Y3 地图工程</p>
+            <button class="btn btn-primary" onclick="pickAndAddProject()">浏览选择项目文件夹</button>
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = appState.projects.map(p => {
+        const isActive = p.project_id === appState.activeProjectId;
+        const folderName = p.project_path.split(/[\\/]/).pop() || p.project_id;
+        const safePath = p.project_path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const mapsHtml = (p.maps || []).map(m => {
+          const isCurMap = isActive && (m.name === appState.activeMapName);
+          return `<span class="submap-pill ${isCurMap ? 'current' : ''}"
+            onclick="event.stopPropagation(); selectProjectAndMap('${p.project_id}', '${safePath}', '${m.name}')">
+            ${m.name}
+          </span>`;
+        }).join('');
+
+        return `
+          <div class="proj-item ${isActive ? 'active' : ''}" onclick="selectProjectAndMap('${p.project_id}', '${safePath}', '${isActive ? (appState.activeMapName || p.current_map_name) : p.current_map_name}')">
+            <div class="proj-head">
+              <div class="proj-title">
+                <span>${folderName}</span>
+                <span class="tcp-badge">:${p.console_port}</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:11px;color:${p.connected_clients > 0 ? '#10b981' : '#636b7e'}">
+                  ● ${p.connected_clients || 0} 窗口
+                </span>
+                <button class="btn btn-xs" style="padding:2px 6px;font-size:11px;color:var(--text-muted)" title="从工作台列表移除该项目" onclick="removeProjectById('${p.project_id}', '${safePath}', event)">移除</button>
+              </div>
+            </div>
+            <div class="proj-dir">${p.project_path}</div>
+            <div class="submap-pills" style="margin-bottom:2px">${mapsHtml}</div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderMultiOverview() {
+      const grid = document.getElementById('multiOverviewGrid');
+      if (grid) grid.innerHTML = '';
+    }
+
+    async function pickEditorPath() {
+      try {
+        setStatus('请选择 Y3 编辑器的 Editor.exe 或 Game_x64h.exe...');
+        const res = await apiCall('pick_file_dialog', { filter: 'Editor.exe' });
+        if (res && res.path) {
+          await callToolAndToast('set_editor_path', { editorPath: res.path });
+        } else {
+          setStatus('已取消编辑器路径选择');
+        }
+      } catch (e) {
+        setStatus(`设置编辑器路径失败: ${e.message}`, true);
+      }
+    }
+
+    async function pickAndAddProject() {
+      try {
+        setStatus('正在打开系统文件夹选择框...');
+        const res = await apiCall('pick_folder_dialog', {});
+        if (res && res.path) {
+          await callToolAndToast('set_project_path', { projectPath: res.path, setActive: true });
+          saveRecentProjects();
+        } else {
+          setStatus('已取消文件夹选择');
+        }
+      } catch (e) {
+        setStatus(`选择项目失败: ${e.message}`, true);
+      }
+    }
+
+    async function addManualProject() {
+      const inp = document.getElementById('manualProjPath');
+      const val = inp.value.trim();
+      if (!val) return;
+      await callToolAndToast('set_project_path', { projectPath: val, setActive: true });
+      inp.value = '';
+      saveRecentProjects();
+    }
+
+    function saveRecentProjects() {
+      try {
+        const paths = appState.projects.map(p => p.project_path);
+        localStorage.setItem('y3_helper_recent_projects', JSON.stringify(paths));
+      } catch (_) {}
+    }
+
+    async function restoreRecentProjects() {
+      try {
+        const raw = localStorage.getItem('y3_helper_recent_projects');
+        if (!raw) return;
+        const paths = JSON.parse(raw);
+        if (Array.isArray(paths)) {
+          for (const p of paths) {
+            await apiCall('set_project_path', { projectPath: p, setActive: false }).catch(() => {});
+          }
+        }
+      } catch (_) {}
+    }
+
+    function switchTab(tabId, el) {
+      if (tabId !== 'tab-multi' && !appState.activeProjectPath) {
+        setStatus('请先在最左侧「1. 挂载项目列表」中添加并选择一个 Y3 项目，再使用该项目下的工具', true);
+        return;
+      }
+      document.querySelectorAll('.nav-item').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      el.classList.add('active');
+      document.getElementById(tabId).classList.add('active');
+
+      if (tabId === 'tab-table' && appState.activeProjectPath) {
+        loadTableList();
+      } else if (tabId === 'tab-console' && appState.activeProjectPath) {
+        loadGameLogs();
+      } else if (tabId === 'tab-y3maker' && appState.activeProjectPath) {
+        loadY3MakerHub();
+      }
+    }
+
+    function toggleCustomGitUrlInput() {
+      const sel = document.getElementById('y3makerRepoSelect');
+      const row = document.getElementById('customGitUrlRow');
+      if (row && sel) {
+        row.style.display = sel.value === 'custom' ? 'block' : 'none';
+      }
+    }
+
+    function getSelectedY3MakerSource() {
+      const sel = document.getElementById('y3makerRepoSelect').value;
+      if (sel === 'custom') {
+        return document.getElementById('y3makerCustomUrlInput').value.trim() || 'gitee';
+      }
+      return sel;
+    }
+
+    function renderY3MakerHub(hub) {
+      if (!hub) return;
+      const badge = document.getElementById('y3makerStatusBadge');
+      const statusMap = {
+        managed: { text: 'Git 官方托管', color: '#10b981', bg: 'rgba(16,185,129,0.12)' },
+        partial: { text: '已同步到本地', color: '#60a5fa', bg: 'rgba(59,130,246,0.14)' },
+        missing: { text: '项目尚未拉取 .y3maker', color: '#fbbf24', bg: 'rgba(245,158,11,0.14)' },
+        foreign: { text: '自定义 Git 仓库', color: '#a78bfa', bg: 'rgba(139,92,246,0.14)' }
+      };
+      const st = statusMap[hub.status] || statusMap.partial;
+      if (badge) {
+        badge.textContent = st.text + (hub.git_commit ? ` (${hub.git_commit})` : '');
+        badge.style.color = st.color;
+        badge.style.background = st.bg;
+      }
+
+      const statsBox = document.getElementById('y3makerStatsBox');
+      if (statsBox) {
+        const globalStatus = hub.global_hub_ready
+          ? `<span style="color:#6ee7b7">已缓存 ${hub.global_hub_commit ? `(${hub.global_hub_commit})` : ''}</span>`
+          : `<span style="color:#fbbf24">尚未拉取（首次点击「拉取/同步」将自动建立全局缓存）</span>`;
+        const commitLine = hub.git_commit
+          ? `<div style="margin-top:4px;font-size:11.5px;color:var(--text-muted)">项目仓库版本: <code style="color:#93c5fd">${hub.git_commit}</code> · ${hub.git_commit_time || ''} · ${hub.git_commit_msg || ''}</div>`
+          : '';
+        const adapterNotes = Array.isArray(hub.mcp_adapter_notes) && hub.mcp_adapter_notes.length > 0
+          ? `<div style="margin-top:8px;padding:7px 9px;background:rgba(16,185,129,0.08);border:1px solid rgba(16,185,129,0.22);border-radius:var(--radius-sm);font-size:11px;color:#d1fae5">
+               <div style="font-weight:700;color:#6ee7b7;margin-bottom:3px">⚡ Y3 Studio MCP 协议桥接器已生效（官方 .y3maker ➔ 三合一常驻网关自动兼容）：</div>
+               ${hub.mcp_adapter_notes.map(n => `<div style="margin-top:2px">• ${n}</div>`).join('')}
+             </div>`
+          : '';
+        statsBox.innerHTML = `
+          <div><strong>客户端全局母库：</strong><code style="color:#c7d2fe">${hub.global_hub_dir}</code> (${globalStatus})</div>
+          <div style="margin-top:4px"><strong>当前项目目录：</strong><code style="color:#c7d2fe">${hub.y3maker_dir}</code></div>
+          ${commitLine}
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;padding-top:6px;border-top:1px solid var(--border-subtle)">
+            <span>📦 项目已安装技能: <strong style="color:#fff">${hub.skills_count} 个</strong></span>
+            <span>📚 知识库文档: <strong style="color:#fff">${hub.knowledge_count} 篇</strong></span>
+            <span>🧩 模板与脚本: <strong style="color:#fff">${hub.templates_count + hub.tools_count} 个</strong></span>
+            <span>🔗 <code>.agents/skills</code>: <strong style="color:${hub.agents_skills_linked ? '#6ee7b7' : '#fbbf24'}">${hub.agents_skills_linked ? '已链接' : '未链接'}</strong></span>
+            <span>🔌 <code>MCP 桥接适配</code>: <strong style="color:${hub.mcp_adapted ? '#6ee7b7' : '#fbbf24'}">${hub.mcp_adapted ? '已桥接三合一网关' : '待同步'}</strong></span>
+          </div>
+          ${adapterNotes}
+        `;
+      }
+
+      const targetsBox = document.getElementById('agentTargetsList');
+      if (targetsBox && Array.isArray(hub.agent_targets)) {
+        targetsBox.innerHTML = hub.agent_targets.map(t => `
+          <label style="background:rgba(0,0,0,0.24);border:1px solid ${t.equipped ? 'rgba(16,185,129,0.28)' : 'var(--border-subtle)'};border-radius:var(--radius-md);padding:9px 12px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;cursor:pointer">
+            <div style="display:flex;align-items:flex-start;gap:9px">
+              <input type="checkbox" class="agent-target-chk" value="${t.id}" ${t.detected || t.id === 'project_links' ? 'checked' : ''} style="margin-top:3px" />
+              <div>
+                <div style="font-size:12.5px;font-weight:600;color:var(--text-primary)">${t.name}</div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${t.detail}</div>
+              </div>
+            </div>
+            <span class="tcp-badge" style="color:${t.equipped ? '#6ee7b7' : '#fbbf24'};border-color:${t.equipped ? 'rgba(16,185,129,0.35)' : 'rgba(245,158,11,0.35)'}">
+              ${t.equipped ? '已装配' : '待装配'}
+            </span>
+          </label>
+        `).join('');
+      }
+
+      const countEl = document.getElementById('y3makerSkillCount');
+      if (countEl) countEl.textContent = (hub.skills || []).length;
+
+      const grid = document.getElementById('y3makerSkillsGrid');
+      if (grid) {
+        const skills = hub.skills || [];
+        if (skills.length === 0) {
+          grid.innerHTML = `<div style="padding:18px;color:var(--text-muted);font-size:12.5px">当前项目尚未拉取 .y3maker 技能库。请点击左上方「拉取 / 同步最新技能库」从官方 Git 仓库获取全套 Y3 技能与知识库。</div>`;
+        } else {
+          grid.innerHTML = skills.map(s => `
+            <div onclick="openSkillDetail('${s.id}')" style="background:rgba(0,0,0,0.26);border:1px solid var(--border-subtle);border-radius:var(--radius-md);padding:11px 13px;display:flex;flex-direction:column;gap:6px;cursor:pointer;transition:border-color 0.15s" onmouseover="this.style.borderColor='var(--accent-primary)'" onmouseout="this.style.borderColor='var(--border-subtle)'">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <span style="font-family:'JetBrains Mono',Consolas,monospace;font-size:12.5px;font-weight:700;color:#a5b4fc">${s.id}</span>
+                <div style="display:flex;gap:5px">
+                  ${s.has_scripts ? `<span class="tcp-badge" style="color:#93c5fd">🐍 ${s.script_count} 脚本</span>` : ''}
+                  <span class="tcp-badge" style="color:${s.bom_clean ? '#6ee7b7' : '#fbbf24'}">${s.bom_clean ? 'UTF-8 OK' : '含BOM'}</span>
+                </div>
+              </div>
+              <div style="font-size:11.5px;color:var(--text-secondary);line-height:1.45;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden" title="${(s.description || '').replace(/"/g, '&quot;')}">
+                ${s.description || s.name}
+              </div>
+            </div>
+          `).join('');
+        }
+      }
+    }
+
+    async function loadY3MakerHub() {
+      if (!appState.activeProjectPath) return;
+      try {
+        const mcpPort = parseInt(location.port || '8768', 10);
+        const hub = await apiCall('get_y3maker_hub', { mcpPort });
+        renderY3MakerHub(hub);
+      } catch (e) {
+        setStatus(`读取 .y3maker 状态失败: ${e.message}`, true);
+      }
+    }
+
+    async function checkY3MakerRemoteUpdate() {
+      if (!appState.activeProjectPath) return;
+      const repoSource = getSelectedY3MakerSource();
+      try {
+        setStatus(`正在连接远程 Git 仓库 (${repoSource}) 检查版本更新...`);
+        const res = await apiCall('check_y3maker_update', { repoSource });
+        setStatus(res.message || '远程版本检查完成');
+      } catch (e) {
+        setStatus(`检查远程更新失败: ${e.message}`, true);
+      }
+    }
+
+    async function syncY3MakerNow() {
+      if (!appState.activeProjectPath) return;
+      const repoSource = getSelectedY3MakerSource();
+      const mcpPort = parseInt(location.port || '8768', 10);
+      try {
+        setStatus(`正在从 ${repoSource} 拉取/更新客户端全局母库与当前项目 .y3maker...`);
+        const res = await apiCall('sync_y3maker', { repoSource, mcpPort });
+        if (res && res.hub) renderY3MakerHub(res.hub);
+        setStatus(`同步完成 (${res.action})，已自动净化 ${res.bom_fixed_files || 0} 个 BOM 文件并链接 .agents/skills`);
+      } catch (e) {
+        setStatus(`同步 .y3maker 失败: ${e.message}`, true);
+      }
+    }
+
+    async function openSkillDetail(skillId) {
+      try {
+        setStatus(`正在读取技能 ${skillId} 的 SKILL.md 详情...`);
+        const res = await apiCall('get_skill_detail', { skillId });
+        document.getElementById('skillDetailTitle').textContent = `技能详情: ${res.id}`;
+        const scriptsInfo = (res.scripts && res.scripts.length > 0)
+          ? `内置脚本 (${res.scripts.length}): ${res.scripts.join(', ')}`
+          : '无内置脚本 (纯 Prompt 编排技能)';
+        document.getElementById('skillDetailMeta').innerHTML = `<div>路径: <code>${res.path}</code></div><div style="margin-top:3px">${scriptsInfo}</div>`;
+        document.getElementById('skillDetailContent').textContent = res.content || '';
+        document.getElementById('skillDetailModal').style.display = 'flex';
+        setStatus(`已打开技能详情: ${skillId}`);
+      } catch (e) {
+        setStatus(`读取技能详情失败: ${e.message}`, true);
+      }
+    }
+
+    async function equipSelectedAgents() {
+      if (!appState.activeProjectPath) return;
+      const chks = Array.from(document.querySelectorAll('.agent-target-chk:checked'));
+      const targets = chks.map(c => c.value);
+      if (targets.length === 0) {
+        setStatus('请至少勾选一个要装配的智能体目标', true);
+        return;
+      }
+      const mcpPort = parseInt(location.port || '8768', 10);
+      try {
+        setStatus(`正在为 [${targets.join(', ')}] 一键装配 .y3maker 技能库与三合一 MCP...`);
+        const res = await apiCall('equip_agents', { targets, mcpPort });
+        if (res && res.hub) renderY3MakerHub(res.hub);
+        const msg = (res.logs || []).join(' | ') || '装配完成';
+        setStatus(`一键装配成功：${msg}`);
+      } catch (e) {
+        setStatus(`一键装配失败: ${e.message}`, true);
+      }
+    }
+
+    function openLaunchModal() {
+      document.getElementById('launchModal').style.display = 'flex';
+    }
+    function closeLaunchModal() {
+      document.getElementById('launchModal').style.display = 'none';
+    }
+    async function confirmLaunchGame() {
+      const multiMode = document.getElementById('chkMultiMode').checked;
+      const tracy = document.getElementById('chkTracy').checked;
+      const playersStr = document.getElementById('multiPlayersInput').value.trim();
+      let multiPlayers = undefined;
+      if (playersStr) {
+        multiPlayers = playersStr.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      }
+      closeLaunchModal();
+      await callToolAndToast('launch_game', { multiMode, multiPlayers, tracy });
+    }
+
+    async function updateCurrentGameClients() {
+      if (!appState.activeProjectPath) return;
+      try {
+        const status = await apiCall('get_game_status', {});
+        const clients = status.clients || [];
+        const sel = document.getElementById('clientSlotSelect');
+        const prev = sel.value;
+        sel.innerHTML = `<option value="">默认游戏窗口</option>` +
+          clients.map(c => `<option value="${c.slot}">窗口 #${c.slot} (${c.role_name || 'Client #' + c.id})</option>`).join('');
+        sel.value = prev;
+
+        const listEl = document.getElementById('clientSlotsList');
+        if (clients.length === 0) {
+          listEl.innerHTML = '当前项目暂无运行中的游戏连接窗口';
+        } else {
+          listEl.innerHTML = clients.map(c =>
+            `<span class="tcp-badge" style="margin-right:6px">槽位 #${c.slot}: ${c.role_name || 'Player'} (日志 ${c.log_count} 条)</span>`
+          ).join('');
+        }
+      } catch (_) {}
+    }
+
+    function setLuaPreset(code) {
+      document.getElementById('luaCodeInput').value = code;
+    }
+
+    async function triggerUiTouchNow() {
+      const ui_path = document.getElementById('uiTouchPathInput').value.trim();
+      const touch = document.getElementById('uiTouchBtnSelect').value;
+      const slotVal = document.getElementById('clientSlotSelect').value;
+      const clientSlot = slotVal ? parseInt(slotVal, 10) : undefined;
+      await callToolAndShowBox('trigger_ui_touch_event_by_path', { ui_path, touch, clientSlot }, 'luaExecResult');
+    }
+
+    async function runLuaCode() {
+      const code = document.getElementById('luaCodeInput').value;
+      const slotVal = document.getElementById('clientSlotSelect').value;
+      const clientSlot = slotVal ? parseInt(slotVal, 10) : undefined;
+      if (code.trim() === '.rd') {
+        await callToolAndShowBox('reload_lua', {}, 'luaExecResult');
+        return;
+      }
+      await callToolAndShowBox('execute_lua', { code, clientSlot }, 'luaExecResult');
+      await loadGameLogs();
+    }
+
+    async function loadGameLogs() {
+      if (!appState.activeProjectPath) return;
+      try {
+        const slotVal = document.getElementById('clientSlotSelect').value;
+        const clientSlot = slotVal ? parseInt(slotVal, 10) : undefined;
+        const res = await apiCall('get_logs', { limit: 200, clientSlot });
+        const view = document.getElementById('gameLogsView');
+        const logText = Array.isArray(res.logs) ? res.logs.join('\n') : (res.logs || '');
+        if (logText.trim().length > 0) {
+          const prefix = res.online === false && res.log_file
+            ? `[离线历史日志 · 来源: ${res.log_file}]\n`
+            : '';
+          view.textContent = prefix + logText;
+          view.scrollTop = view.scrollHeight;
+        } else {
+          view.textContent = res.message || '暂无日志记录...';
+        }
+      } catch (e) {
+        const view = document.getElementById('gameLogsView');
+        if (view) view.textContent = `读取日志失败: ${e.message}`;
+      }
+    }
+
+    async function captureGameScreenshot() {
+      try {
+        const slotVal = document.getElementById('clientSlotSelect').value;
+        const clientSlot = slotVal ? parseInt(slotVal, 10) : undefined;
+        setStatus('正在截取游戏画面...');
+        const res = await apiCall('capture_screenshot', { clientSlot });
+        if (res.base64_png) {
+          document.getElementById('screenshotBox').style.display = 'block';
+          document.getElementById('screenshotImg').src = 'data:image/png;base64,' + res.base64_png;
+          setStatus(`截图成功: ${res.file_path || ''}`);
+        } else {
+          setStatus(res.message || '截图未返回图像数据', !res.success);
+        }
+      } catch (e) {
+        setStatus(`截图失败: ${e.message}`, true);
+      }
+    }
+
+    async function loadTableList() {
+      if (!appState.activeProjectPath) return;
+      const tableType = document.getElementById('tableTypeSelect').value;
+      try {
+        const res = await apiCall('editor_table_list', { tableType });
+        appState.tableItems = res.items || [];
+        document.getElementById('tableItemCount').textContent = appState.tableItems.length;
+        renderTableItems();
+      } catch (e) {
+        setStatus(`读取物编列表失败: ${e.message}`, true);
+      }
+    }
+
+    function renderTableItems() {
+      const q = document.getElementById('tableSearchInput').value.trim().toLowerCase();
+      const filtered = appState.tableItems.filter(it =>
+        !q || String(it.key).includes(q) || (it.name && it.name.toLowerCase().includes(q))
+      );
+      const curKey = parseInt(document.getElementById('objKeyInput').value, 10);
+      const box = document.getElementById('tableObjList');
+      if (filtered.length === 0) {
+        box.innerHTML = `<div style="padding:16px;color:var(--text-muted);font-size:12px">无匹配物编条目</div>`;
+        return;
+      }
+      box.innerHTML = filtered.map(it => `
+        <div class="obj-row ${it.key === curKey ? 'active' : ''}" onclick="selectTableObject(${it.key})">
+          <span>${it.name || '(未命名)'}</span>
+          <span class="obj-key">#${it.key}</span>
+        </div>
+      `).join('');
+    }
+
+    async function selectTableObject(key) {
+      const tableType = document.getElementById('tableTypeSelect').value;
+      try {
+        const res = await apiCall('editor_table_get', { tableType, key });
+        document.getElementById('objKeyInput').value = res.key;
+        document.getElementById('objNameInput').value = res.name || '';
+        const data = res.data || {};
+        const kv = data.kv || {};
+        document.getElementById('objFieldsArea').value = JSON.stringify(data, null, 2);
+        document.getElementById('objKvArea').value = JSON.stringify(kv, null, 2);
+        renderTableItems();
+      } catch (e) {
+        setStatus(`读取物编详情失败: ${e.message}`, true);
+      }
+    }
+
+    function prepareNewObject() {
+      document.getElementById('objKeyInput').value = '';
+      document.getElementById('objNameInput').value = '新建物编';
+      document.getElementById('objFieldsArea').value = '{\n  \n}';
+      document.getElementById('objKvArea').value = '{\n  \n}';
+      setStatus('已准备新建物编，填写名称与字段后点击「保存物编修改」即可创建');
+    }
+
+    async function saveCurrentObject() {
+      const tableType = document.getElementById('tableTypeSelect').value;
+      const keyRaw = document.getElementById('objKeyInput').value.trim();
+      const key = keyRaw ? parseInt(keyRaw, 10) : undefined;
+      const name = document.getElementById('objNameInput').value.trim();
+      try {
+        const fields = JSON.parse(document.getElementById('objFieldsArea').value || '{}');
+        const kv = JSON.parse(document.getElementById('objKvArea').value || '{}');
+        const res = await callToolAndToast('editor_table_upsert', { tableType, key, name, fields, kv });
+        if (res && res.key) {
+          document.getElementById('objKeyInput').value = res.key;
+          await loadTableList();
+          await selectTableObject(res.key);
+        }
+      } catch (e) {
+        setStatus(`保存物编失败 (请检查 JSON 格式): ${e.message}`, true);
+      }
+    }
+
+    async function deleteCurrentObject() {
+      const tableType = document.getElementById('tableTypeSelect').value;
+      const keyRaw = document.getElementById('objKeyInput').value.trim();
+      if (!keyRaw) return;
+      const key = parseInt(keyRaw, 10);
+      if (!confirm(`确定删除物编 #${key} 吗？`)) return;
+      await callToolAndToast('editor_table_delete', { tableType, key });
+      await loadTableList();
+    }
+
+    async function pickExcelFile() {
+      try {
+        const res = await apiCall('pick_file_dialog', { filter: 'xlsx' });
+        if (res && res.path) {
+          document.getElementById('excelPathInput').value = res.path;
+        }
+      } catch (e) {
+        setStatus(`选择文件失败: ${e.message}`, true);
+      }
+    }
+
+    async function importExcelToTable() {
+      const table_type = document.getElementById('tableTypeSelect').value;
+      const excel_path = document.getElementById('excelPathInput').value.trim();
+      const sheet_name = document.getElementById('excelSheetInput').value.trim() || undefined;
+      if (!excel_path) {
+        setStatus('请先选择或输入 Excel (.xlsx) 文件路径', true);
+        return;
+      }
+      await callToolAndToast('excel_import', { table_type, excel_path, sheet_name });
+      await loadTableList();
+    }
+
+    async function loadUiCanvasTree() {
+      const nodePath = document.getElementById('uiNodePathInput').value.trim() || undefined;
+      const box = document.getElementById('uiCanvasTreeOutput');
+      try {
+        box.textContent = '正在解析 UI 画布树...';
+        const res = await apiCall('get_ui_canvas', { nodePath, depth: -1 });
+        box.textContent = res.canvas || res.error || JSON.stringify(res, null, 2);
+      } catch (e) {
+        box.textContent = `读取失败: ${e.message}`;
+      }
+    }
+
+    async function loadCustomDefines() {
+      await callToolAndShowBox('custom_define_overview', {}, 'metaOutputView');
+    }
+
+    async function generateMetaNow() {
+      await callToolAndShowBox('generate_meta', {}, 'metaOutputView');
+    }
+
+    async function compileEcaNow() {
+      await callToolAndShowBox('compile_eca', {}, 'ecaCompileOutput');
+    }
+
+    async function saveGmpNow() {
+      const updatePrefabs = document.getElementById('gmpPrefabs').checked;
+      const updateUI = document.getElementById('gmpUi').checked;
+      const updateZHLanguage = document.getElementById('gmpZh').checked;
+      const updateUSLanguage = document.getElementById('gmpUs').checked;
+      await callToolAndShowBox('save_gmp', {
+        updatePrefabs, updateUI, updateZHLanguage, updateUSLanguage
+      }, 'gmpSaveOutput');
+    }
+
+    function copyMcpConfig() {
+      const helperUrl = `${location.origin}/mcp`;
+      const editorProxyUrl = `${location.origin}/y3editor/mcp`;
+      const runtimeProxyUrl = `${location.origin}/y3runtime/mcp`;
+      const cfg = JSON.stringify({
+        mcpServers: {
+          "y3-helper": { url: helperUrl },
+          "helper": { url: helperUrl },
+          "y3editor": { url: editorProxyUrl },
+          "y3runtime": { url: runtimeProxyUrl }
+        }
+      }, null, 2);
+      navigator.clipboard.writeText(cfg);
+      setStatus('已复制四路兼容 MCP 配置 (y3-helper + helper + y3editor + y3runtime) 到剪贴板！');
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key === 'Enter' && document.activeElement.id === 'luaCodeInput') {
+        runLuaCode();
+      }
+    });
+
+    (async () => {
+      const hEl = document.getElementById('helperMcpGatewayUrl');
+      if (hEl) hEl.textContent = `${location.origin}/mcp`;
+      const eEl = document.getElementById('editorMcpGatewayUrl');
+      if (eEl) eEl.textContent = `${location.origin}/y3editor/mcp`;
+      const rEl = document.getElementById('runtimeMcpGatewayUrl');
+      if (rEl) rEl.textContent = `${location.origin}/y3runtime/mcp`;
+      await refreshAll();
+      setInterval(() => {
+        if (document.getElementById('autoPollLogs').checked &&
+            document.getElementById('tab-console').classList.contains('active')) {
+          loadGameLogs();
+          updateCurrentGameClients();
+        }
+      }, 2500);
+    })();
+  </script>
+</body>
+</html>
