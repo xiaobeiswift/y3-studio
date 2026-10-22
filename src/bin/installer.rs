@@ -511,9 +511,9 @@ impl eframe::App for InstallerApp {
                             .inner_margin(Margin::same(16.0))
                             .show(ui, |ui| {
                                 let title = if self.is_uninstall {
-                                    "✓ Y3 Studio 已成功卸载"
+                                    format!("✓ {} 已成功卸载", APP_NAME)
                                 } else {
-                                    "✓ Y3 Studio v0.0.1 安装完成！"
+                                    format!("✓ {} v{} 安装完成！", APP_NAME, APP_VERSION)
                                 };
                                 ui.label(
                                     RichText::new(title)

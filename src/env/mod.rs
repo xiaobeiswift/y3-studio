@@ -120,31 +120,42 @@ impl EditorEnv {
 
     /// 根据 `Editor.exe`、`Game_x64h.exe` 或安装目录构造 `EditorEnv`
     pub fn from_editor_exe(input_path: PathBuf) -> Option<Self> {
-        // 支持传入目录、Game_x64h.exe 或 Editor.exe
+        // 支持传入目录、Game_x64h.exe、game.exe 或 Editor.exe
         let mut editor_exe_path = input_path.clone();
         if input_path.is_dir() {
             if input_path.join("Editor.exe").is_file() {
                 editor_exe_path = input_path.join("Editor.exe");
             } else if input_path.join("game").join("Editor.exe").is_file() {
                 editor_exe_path = input_path.join("game").join("Editor.exe");
-            }
-        } else if input_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.eq_ignore_ascii_case("Game_x64h.exe"))
-            .unwrap_or(false)
-        {
-            // 若用户直接选择了 Engine/Binaries/Win64/Game_x64h.exe，向上反推 Editor.exe
-            if let Some(game_dir) = input_path
+            } else if let Some(game_dir) = input_path
                 .parent()
-                .and_then(|p| p.parent())
                 .and_then(|p| p.parent())
                 .and_then(|p| p.parent())
             {
                 if game_dir.join("Editor.exe").is_file() {
                     editor_exe_path = game_dir.join("Editor.exe");
-                } else if game_dir.join("game").join("Editor.exe").is_file() {
-                    editor_exe_path = game_dir.join("game").join("Editor.exe");
+                }
+            }
+        } else if let Some(fname) = input_path.file_name().and_then(|n| n.to_str()) {
+            if fname.eq_ignore_ascii_case("Game_x64h.exe") {
+                // 若用户直接选择了 Engine/Binaries/Win64/Game_x64h.exe，向上反推 Editor.exe
+                if let Some(game_dir) = input_path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.parent())
+                {
+                    if game_dir.join("Editor.exe").is_file() {
+                        editor_exe_path = game_dir.join("Editor.exe");
+                    } else if game_dir.join("game").join("Editor.exe").is_file() {
+                        editor_exe_path = game_dir.join("game").join("Editor.exe");
+                    }
+                }
+            } else if fname.eq_ignore_ascii_case("game.exe") {
+                if let Some(dir) = input_path.parent() {
+                    if dir.join("Editor.exe").is_file() {
+                        editor_exe_path = dir.join("Editor.exe");
+                    }
                 }
             }
         }

@@ -202,8 +202,8 @@ impl GameLauncher {
         let map = project.resolve_map(options.map_name.as_deref())?;
         let trigger_map = project.trigger_map_for(Some(&map.name))?;
 
-        // 1. 启动前可选保存 GMP
-        if options.save_gmp_before_launch.unwrap_or(true) {
+        // 1. 启动前可选保存 GMP（默认 false，与 VS Code 原版 launchGame.ts 保持一致，避免意外覆盖编辑器未导出的 .gmp 数据）
+        if options.save_gmp_before_launch.unwrap_or(false) {
             let _ = save_gmp(&trigger_map.map_path, GmpSaveOptions::default());
         }
 
@@ -262,11 +262,12 @@ impl GameLauncher {
                 .collect::<Vec<_>>()
                 .join("#");
 
+            let safe_proj_path = Self::to_ascii_safe_path(&project.project_path);
             let mut py_args = vec![
                 "type@editor_game".to_string(),
                 "subtype@editor_multi_game".to_string(),
                 format!("role_ids@{}", role_ids_str),
-                format!("editor_map_path@{}", project.project_path.display()),
+                format!("editor_map_path@{}", safe_proj_path),
                 format!("level_id@{}", map.id),
                 "release@true".to_string(),
                 "lua_dummy@sp ce".to_string(),
@@ -294,10 +295,11 @@ impl GameLauncher {
                 });
             }
         } else {
+            let safe_proj_path = Self::to_ascii_safe_path(&project.project_path);
             let mut py_args = vec![
                 "type@editor_game".to_string(),
                 "subtype@editor_game".to_string(),
-                format!("editor_map_path@{}", project.project_path.display()),
+                format!("editor_map_path@{}", safe_proj_path),
                 format!("level_id@{}", map.id),
                 "release@true".to_string(),
                 "lua_dummy@sp ce".to_string(),
@@ -370,6 +372,68 @@ impl GameLauncher {
         Self::spawn_elevated_or_direct(&editor.game_exe_path, &args, wd)
     }
 
+    /// 将可能包含中文的路径优先转为 Windows 8.3 纯 ASCII 短路径，避免 Python 2.7 `'ascii' codec` 解码崩溃
+    pub fn to_ascii_safe_path(path: &Path) -> String {
+        let raw = path.to_string_lossy().to_string();
+        if raw.is_ascii() {
+            return raw;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::ffi::{OsStrExt, OsStringExt};
+            extern "system" {
+                fn GetShortPathNameW(
+                    lpszLongPath: *const u16,
+                    lpszShortPath: *mut u16,
+                    cchBuffer: u32,
+                ) -> u32;
+            }
+            let wide: Vec<u16> = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            unsafe {
+                let len = GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0);
+                if len > 0 {
+                    let mut buf = vec![0u16; len as usize];
+                    let written = GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), len);
+                    if written > 0 && (written as usize) < buf.len() {
+                        let short = std::ffi::OsString::from_wide(&buf[..written as usize])
+                            .to_string_lossy()
+                            .to_string();
+                        if !short.is_empty() && short.is_ascii() {
+                            return short;
+                        }
+                    }
+                }
+            }
+        }
+        raw
+    }
+
+    /// 若带参启动时误指向外层启动器壳程序 `Editor.exe` / `game.exe`，自动重定向至内层引擎 `Game_x64h.exe`，
+    /// 彻底杜绝 `Editor.exe` (Python 2.7 `web_import.parse_protocol_args`) 弹出 `Y3 Import: 'ascii' codec can't decode byte` 报错
+    pub fn resolve_engine_exe_and_cwd(exe: &Path, args: &[String], cwd: &Path) -> (PathBuf, PathBuf) {
+        if !args.is_empty() {
+            if let Some(fname) = exe.file_name().and_then(|n| n.to_str()) {
+                if fname.eq_ignore_ascii_case("Editor.exe") || fname.eq_ignore_ascii_case("game.exe") {
+                    if let Some(env) = EditorEnv::from_editor_exe(exe.to_path_buf()) {
+                        if env.game_exe_path.is_file() {
+                            let new_cwd = env
+                                .game_exe_path
+                                .parent()
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|| cwd.to_path_buf());
+                            return (env.game_exe_path, new_cwd);
+                        }
+                    }
+                }
+            }
+        }
+        (exe.to_path_buf(), cwd.to_path_buf())
+    }
+
     /// 优先直接启动进程；若遇到 Windows OS Error 740 (`ERROR_ELEVATION_REQUIRED` 请求的操作需要提升)，
     /// 自动通过内置常驻管理员提权代理（只需授权一次 UAC，后续永久免弹窗）或 PowerShell `RunAs` 启动
     pub fn spawn_elevated_or_direct(
@@ -377,6 +441,10 @@ impl GameLauncher {
         args: &[String],
         cwd: &Path,
     ) -> anyhow::Result<u32> {
+        let (target_exe, target_cwd) = Self::resolve_engine_exe_and_cwd(exe, args, cwd);
+        let exe = target_exe.as_path();
+        let cwd = target_cwd.as_path();
+
         match Command::new(exe)
             .args(args)
             .current_dir(cwd)
@@ -724,9 +792,11 @@ impl GameLauncher {
                         })
                         .unwrap_or_default();
                     let cwd = msg.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
-                    match Command::new(exe)
+                    let (resolved_exe, resolved_cwd) =
+                        Self::resolve_engine_exe_and_cwd(Path::new(exe), &args, Path::new(cwd));
+                    match Command::new(&resolved_exe)
                         .args(&args)
-                        .current_dir(cwd)
+                        .current_dir(&resolved_cwd)
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())

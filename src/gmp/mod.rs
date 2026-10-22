@@ -489,8 +489,12 @@ fn load_json_folder_as_dict(folder: &Path) -> Value {
                 if let Ok(val) = serde_json::from_str::<Value>(&content) {
                     let key_str = val
                         .get("uid")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
+                        .and_then(|v| {
+                            v.as_str()
+                                .map(|s| s.to_string())
+                                .or_else(|| v.as_i64().map(|n| n.to_string()))
+                                .or_else(|| v.as_u64().map(|n| n.to_string()))
+                        })
                         .or_else(|| {
                             path.file_stem()
                                 .and_then(|s| s.to_str())
