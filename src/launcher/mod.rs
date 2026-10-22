@@ -634,55 +634,121 @@ impl GameLauncher {
         // 查询运行中的 Game_x64h.exe 进程命令行以精准匹配目标项目
         if kill_all || project_path.is_some() {
             let filter_str = project_path.map(|p| p.to_string_lossy().to_lowercase());
-            let ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'Game_x64h.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress";
-            if let Ok(output) = Command::new("powershell")
-                .args(["-NoProfile", "-Command", ps_cmd])
-                .output()
-            {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Ok(val) = serde_json::from_str::<Value>(stdout.trim()) {
-                    let items = match val {
-                        Value::Array(arr) => arr,
-                        obj @ Value::Object(_) => vec![obj],
-                        _ => Vec::new(),
-                    };
-                    for item in items {
-                        let pid = match item.get("ProcessId").and_then(|v| v.as_u64()) {
-                            Some(p) => p as u32,
-                            None => continue,
-                        };
-                        if killed_pids.contains(&pid) {
-                            continue;
-                        }
-                        let cmdline = item
-                            .get("CommandLine")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_lowercase();
+            let items = Self::query_game_processes();
+            for (pid, cmdline) in items {
+                if killed_pids.contains(&pid) {
+                    continue;
+                }
+                let cmd_lower = cmdline.to_lowercase();
 
-                        // 绝不误杀编辑器主窗口 (type@editor,subtype@author)
-                        if cmdline.contains("type@editor,") {
-                            continue;
-                        }
+                // 绝不误杀编辑器主窗口 (type@editor,subtype@author)
+                if cmd_lower.contains("type@editor,") {
+                    continue;
+                }
 
-                        let should_kill = if kill_all {
-                            true
-                        } else if let Some(ref proj_lower) = filter_str {
-                            let proj_slash = proj_lower.replace('\\', "/");
-                            cmdline.contains(proj_lower) || cmdline.contains(&proj_slash)
-                        } else {
-                            false
-                        };
+                let should_kill = if kill_all {
+                    true
+                } else if let Some(ref proj_lower) = filter_str {
+                    let proj_slash = proj_lower.replace('\\', "/");
+                    cmd_lower.contains(proj_lower) || cmd_lower.contains(&proj_slash)
+                } else {
+                    false
+                };
 
-                        if should_kill && Self::taskkill_pid(pid) {
-                            killed_pids.push(pid);
-                        }
-                    }
+                if should_kill && Self::taskkill_pid(pid) {
+                    killed_pids.push(pid);
                 }
             }
         }
 
         Ok(killed_pids)
+    }
+
+    /// 获取所有运行中的 `Game_x64h.exe` 进程 `(pid, command_line)`：
+    /// 优先通过常驻管理员提权代理查询（避免非管理员进程查询管理员进程时 WMI 返回空 CommandLine），失败再回退本地查询
+    pub fn query_game_processes() -> Vec<(u32, String)> {
+        if let Some(resp) = Self::try_request_agent(&json!({ "type": "list_processes" })) {
+            if let Some(arr) = resp.get("processes").and_then(|v| v.as_array()) {
+                let mut res = Vec::new();
+                for item in arr {
+                    if let Some(pid) = item.get("pid").and_then(|v| v.as_u64()) {
+                        let cmd = item
+                            .get("cmdline")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !cmd.is_empty() {
+                            res.push((pid as u32, cmd));
+                        }
+                    }
+                }
+                if !res.is_empty() {
+                    return res;
+                }
+            }
+        }
+        Self::query_game_processes_local()
+    }
+
+    pub fn query_game_processes_local() -> Vec<(u32, String)> {
+        #[cfg(target_os = "windows")]
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut result = Vec::new();
+        let ps_cmd = "Get-CimInstance Win32_Process -Filter \"Name = 'Game_x64h.exe'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json -Compress";
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", ps_cmd]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = cmd.output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(val) = serde_json::from_str::<Value>(stdout.trim()) {
+                let items = match val {
+                    Value::Array(arr) => arr,
+                    obj @ Value::Object(_) => vec![obj],
+                    _ => Vec::new(),
+                };
+                for item in items {
+                    if let Some(pid) = item.get("ProcessId").and_then(|v| v.as_u64()) {
+                        let cmdline = item
+                            .get("CommandLine")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        result.push((pid as u32, cmdline));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// 从编辑器命令行 `--python-args=type@editor,...,project_path@<base64>` 中解析项目根目录路径
+    pub fn extract_editor_project_from_cmdline(cmdline: &str) -> Option<String> {
+        if !cmdline.contains("type@editor,") {
+            return None;
+        }
+        let marker = "project_path@";
+        let start = cmdline.find(marker)? + marker.len();
+        let rest = &cmdline[start..];
+        let b64_part = rest
+            .split(|c: char| c == ',' || c == '"' || c == '\'' || c.is_whitespace())
+            .next()?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_part.trim())
+            .ok()?;
+        let header_str = String::from_utf8(decoded).ok()?;
+        let p = Path::new(&header_str);
+        if p.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.eq_ignore_ascii_case("header.project"))
+            .unwrap_or(false)
+        {
+            p.parent().map(|pp| pp.to_string_lossy().to_string())
+        } else {
+            Some(header_str)
+        }
     }
 
     pub fn taskkill_pid(pid: u32) -> bool {
@@ -830,6 +896,13 @@ impl GameLauncher {
                         false
                     };
                     let _ = writeln!(stream, "{}", json!({ "ok": ok, "pid": pid }));
+                }
+                "list_processes" => {
+                    let list: Vec<Value> = Self::query_game_processes_local()
+                        .into_iter()
+                        .map(|(pid, cmdline)| json!({ "pid": pid, "cmdline": cmdline }))
+                        .collect();
+                    let _ = writeln!(stream, "{}", json!({ "ok": true, "processes": list }));
                 }
                 _ => {
                     let _ = writeln!(stream, "{}", json!({ "ok": false, "error": "Unknown command" }));

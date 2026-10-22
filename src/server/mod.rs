@@ -82,12 +82,22 @@ impl ToolDispatcher {
                     .or_else(|| args.get("set_active"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
+                let explicit_editor_port = args
+                    .get("editorPort")
+                    .or_else(|| args.get("editor_port"))
+                    .and_then(|v| v.as_u64())
+                    .map(|p| p as u16);
                 let ws = self
                     .manager
                     .register_project(Path::new(path_str), set_active)
                     .await?;
                 if let Some(m) = map_name {
                     let _ = ws.context.write().switch_map(m);
+                }
+                if let Some(ep) = explicit_editor_port {
+                    *ws.preferred_editor_port.write() = Some(ep);
+                    // 若该项目已有运行中的编辑器实例且端口不同，立即验证冲突并切换端口
+                    let _ = rebind_running_editor_mcp_port(Some(&ws.project_path), None, ep);
                 }
                 Ok(ws.summary_json(set_active))
             }
@@ -325,17 +335,118 @@ impl ToolDispatcher {
             }
             "launch_editor" => {
                 let ws = self.manager.resolve_project(proj_sel).await?;
+                let explicit_port = args
+                    .get("editorPort")
+                    .or_else(|| args.get("editor_port"))
+                    .and_then(|v| v.as_u64())
+                    .map(|p| p as u16);
+                let force_new = args
+                    .get("forceNew")
+                    .or_else(|| args.get("force_new"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if let Some(ep) = explicit_port {
+                    *ws.preferred_editor_port.write() = Some(ep);
+                }
+                let requested_port = explicit_port.or_else(|| *ws.preferred_editor_port.read());
+
+                // 1. 检查该项目是否已有运行中的编辑器实例
+                let running_editors = discover_running_editor_mcps();
+                let target_norm = normalize_path_key(&ws.project_path.to_string_lossy());
+                if !force_new {
+                    if let Some(existing) = running_editors.iter().find(|e| {
+                        e.get("project_path")
+                            .and_then(|v| v.as_str())
+                            .map(normalize_path_key)
+                            .as_deref()
+                            == Some(target_norm.as_str())
+                    }) {
+                        let cur_port = existing.get("port").and_then(|v| v.as_u64()).unwrap_or(8765) as u16;
+                        let cur_pid = existing.get("pid").and_then(|v| v.as_u64()).map(|n| n as u32);
+                        if let Some(pid) = cur_pid {
+                            *ws.editor_pid.write() = Some(pid);
+                            record_known_editor_pid(&ws.project_path, pid);
+                        }
+                        let final_port = if let Some(req_p) = requested_port {
+                            if req_p != cur_port {
+                                rebind_running_editor_mcp_port(Some(&ws.project_path), cur_pid, req_p)?;
+                                req_p
+                            } else {
+                                cur_port
+                            }
+                        } else {
+                            cur_port
+                        };
+                        return Ok(json!({
+                            "success": true,
+                            "project_id": ws.project_id,
+                            "project_path": ws.project_path,
+                            "editor_pid": cur_pid,
+                            "editor_port": final_port,
+                            "mcp_url": format!("http://127.0.0.1:{}/mcp", final_port),
+                            "gateway_mcp_url": "http://127.0.0.1:8768/y3editor/mcp",
+                            "already_running": true,
+                            "port_rebound": final_port != cur_port
+                        }));
+                    }
+                }
+
+                // 2. 启动前先检查端口冲突并预分配空闲端口（若用户指定的端口已被占用则直接返回失败）
+                let allocated_port = allocate_or_verify_editor_port(requested_port, &running_editors)?;
+
                 let ed = self
                     .manager
                     .editor_env()
                     .ok_or_else(|| anyhow::anyhow!("未检测到 Y3 编辑器路径"))?;
                 let ctx = ws.context.read().clone();
                 let pid = GameLauncher::launch_editor(&ctx, &ed)?;
+                *ws.editor_pid.write() = Some(pid);
+                record_known_editor_pid(&ws.project_path, pid);
+
+                // 3. 等待新编辑器初始化并绑定到预分配的独立端口，回报实际端口
+                let proj_path_clone = ws.project_path.clone();
+                let (actual_port, ready) = tokio::task::spawn_blocking(move || {
+                    wait_and_bind_launched_editor_port(pid, &proj_path_clone, allocated_port)
+                })
+                .await?;
+
                 Ok(json!({
                     "success": true,
                     "project_id": ws.project_id,
-                    "editor_pid": pid
+                    "project_path": ws.project_path,
+                    "editor_pid": pid,
+                    "editor_port": actual_port,
+                    "mcp_url": format!("http://127.0.0.1:{}/mcp", actual_port),
+                    "gateway_mcp_url": "http://127.0.0.1:8768/y3editor/mcp",
+                    "already_running": false,
+                    "port_rebound": actual_port != 8765,
+                    "mcp_ready": ready
                 }))
+            }
+            "set_editor_mcp_port" => {
+                let target_port = args
+                    .get("editorPort")
+                    .or_else(|| args.get("editor_port"))
+                    .or_else(|| args.get("port"))
+                    .and_then(|v| v.as_u64())
+                    .map(|p| p as u16)
+                    .ok_or_else(|| anyhow::anyhow!("缺少 editorPort 参数（例如 8775）"))?;
+                let target_pid = args
+                    .get("pid")
+                    .or_else(|| args.get("editorPid"))
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32);
+                let ws_opt = self.manager.resolve_project(proj_sel).await.ok();
+                if let Some(ref ws) = ws_opt {
+                    *ws.preferred_editor_port.write() = Some(target_port);
+                }
+                let proj_path = ws_opt.as_ref().map(|w| w.project_path.as_path());
+                let info = tokio::task::spawn_blocking({
+                    let proj_owned = proj_path.map(|p| p.to_path_buf());
+                    move || rebind_running_editor_mcp_port(proj_owned.as_deref(), target_pid, target_port)
+                })
+                .await??;
+                Ok(info)
             }
             "get_logs" => {
                 let ws = self.manager.resolve_project(proj_sel).await?;
@@ -857,9 +968,10 @@ impl ToolDispatcher {
         json!([
             {
                 "name": "set_project_path",
-                "description": "Bind or register a Y3 map project directory (supports registering multiple projects simultaneously).",
+                "description": "Bind or register a Y3 map project directory (supports registering multiple projects simultaneously and optional preferred editorPort).",
                 "inputSchema": make_schema(json!({
-                    "setActive": { "type": "boolean" }
+                    "setActive": { "type": "boolean" },
+                    "editorPort": { "type": "integer", "description": "Optional preferred y3editor MCP port for this project (e.g., 8775)" }
                 }), vec!["projectPath"])
             },
             {
@@ -944,8 +1056,19 @@ impl ToolDispatcher {
             },
             {
                 "name": "launch_editor",
-                "description": "Open the target Y3 map project in the Y3 Editor (via Game_x64h.exe with Base64-encoded project_path; never pass CLI args directly to Editor.exe).",
-                "inputSchema": make_schema(json!({}), vec![])
+                "description": "Open the target Y3 map project in the Y3 Editor. Pre-checks port conflicts, allocates a dedicated free y3editor MCP port (or uses editorPort), binds the editor MCP to that port, and returns editor_pid and editor_port.",
+                "inputSchema": make_schema(json!({
+                    "editorPort": { "type": "integer", "description": "Optional explicit y3editor MCP port to bind (fails immediately if already occupied by another process)" },
+                    "forceNew": { "type": "boolean", "description": "Optional flag to force launching a new editor process even if one is already open for this project" }
+                }), vec![])
+            },
+            {
+                "name": "set_editor_mcp_port",
+                "description": "Manually assign or switch the built-in y3editor MCP port for a running Y3 Editor instance (by projectPath or pid). Fails if the target port is already in use.",
+                "inputSchema": make_schema(json!({
+                    "editorPort": { "type": "integer", "description": "Target free TCP port for the editor MCP (e.g., 8775)" },
+                    "pid": { "type": "integer", "description": "Optional target editor process PID" }
+                }), vec!["editorPort"])
             },
             {
                 "name": "get_logs",
@@ -1394,18 +1517,34 @@ pub fn launch_desktop_gui_window(port: u16) {
     let _ = Command::new("cmd").args(["/C", "start", "", &url]).spawn();
 }
 
-async fn handle_health(State(state): State<HttpAppState>) -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "transport": "streamable-http",
-        "port": state.port,
-        "activeSessions": state.sessions.read().len(),
-        "projects": state.dispatcher.manager.list_projects_json()
-    }))
+fn utf8_json_response(status: StatusCode, body: Value) -> Response {
+    let bytes = serde_json::to_vec(&body).unwrap_or_default();
+    (
+        status,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/json; charset=utf-8",
+        )],
+        bytes,
+    )
+        .into_response()
 }
 
-async fn handle_api_projects(State(state): State<HttpAppState>) -> Json<Value> {
-    Json(state.dispatcher.manager.list_projects_json())
+async fn handle_health(State(state): State<HttpAppState>) -> Response {
+    utf8_json_response(
+        StatusCode::OK,
+        json!({
+            "status": "ok",
+            "transport": "streamable-http",
+            "port": state.port,
+            "activeSessions": state.sessions.read().len(),
+            "projects": state.dispatcher.manager.list_projects_json()
+        }),
+    )
+}
+
+async fn handle_api_projects(State(state): State<HttpAppState>) -> Response {
+    utf8_json_response(StatusCode::OK, state.dispatcher.manager.list_projects_json())
 }
 
 async fn handle_api_call(
@@ -1424,12 +1563,11 @@ async fn handle_api_call(
         .unwrap_or_else(|| payload.clone());
 
     match state.dispatcher.call_tool(tool, &args).await {
-        Ok(res) => (StatusCode::OK, Json(res)).into_response(),
-        Err(e) => (
+        Ok(res) => utf8_json_response(StatusCode::OK, res),
+        Err(e) => utf8_json_response(
             StatusCode::BAD_REQUEST,
-            Json(json!({ "success": false, "error": e.to_string() })),
-        )
-            .into_response(),
+            json!({ "success": false, "error": e.to_string() }),
+        ),
     }
 }
 
@@ -1452,7 +1590,7 @@ async fn handle_mcp_post(
 
     match state.dispatcher.handle_jsonrpc_message(&payload).await {
         Some(reply) => {
-            let mut resp = (StatusCode::OK, Json(reply)).into_response();
+            let mut resp = utf8_json_response(StatusCode::OK, reply);
             if let Some(sid) = session_id {
                 if let Ok(hv) = sid.parse() {
                     resp.headers_mut().insert("Mcp-Session-Id", hv);
@@ -1508,12 +1646,15 @@ pub async fn run_stdio_mcp_server(dispatcher: Arc<ToolDispatcher>) -> anyhow::Re
     Ok(())
 }
 
-async fn handle_api_editor_mcps() -> Json<Value> {
+async fn handle_api_editor_mcps() -> Response {
     let list = discover_running_editor_mcps();
-    Json(json!({
-        "count": list.len(),
-        "editors": list
-    }))
+    utf8_json_response(
+        StatusCode::OK,
+        json!({
+            "count": list.len(),
+            "editors": list
+        }),
+    )
 }
 
 /// 智能多编辑器 `y3editor` MCP 路由网关 (`POST /y3editor/mcp`)
@@ -1568,38 +1709,62 @@ async fn handle_y3editor_mcp_proxy(
             Ok(p) => p,
             Err(e) => {
                 let req_id = payload.get("id").cloned().unwrap_or(Value::Null);
-                return (
+                return utf8_json_response(
                     StatusCode::OK,
-                    Json(json!({
+                    json!({
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "error": {
                             "code": -32000,
                             "message": e.to_string()
                         }
-                    })),
-                )
-                    .into_response();
+                    }),
+                );
             }
         }
     };
 
     match forward_jsonrpc_to_editor_mcp(target_port, &payload) {
-        Ok(resp_val) => (StatusCode::OK, Json(resp_val)).into_response(),
+        Ok(resp_val) => utf8_json_response(StatusCode::OK, resp_val),
         Err(e) => {
             let req_id = payload.get("id").cloned().unwrap_or(Value::Null);
-            (
+            utf8_json_response(
                 StatusCode::OK,
-                Json(json!({
+                json!({
                     "jsonrpc": "2.0",
                     "id": req_id,
                     "error": {
                         "code": -32001,
                         "message": format!("转发到编辑器 MCP (127.0.0.1:{}) 失败: {}", target_port, e)
                     }
-                })),
+                }),
             )
-                .into_response()
+        }
+    }
+}
+
+/// 全局记录 `normalized_project_path -> editor_pid`，确保多进程同端口瞬态时绝不错配 PID 与项目路径
+fn known_editor_pids_map() -> &'static RwLock<std::collections::HashMap<String, u32>> {
+    static MAP: std::sync::OnceLock<RwLock<std::collections::HashMap<String, u32>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| RwLock::new(std::collections::HashMap::new()))
+}
+
+pub fn record_known_editor_pid(project_path: &Path, pid: u32) {
+    let norm = normalize_path_key(&project_path.to_string_lossy());
+    if !norm.is_empty() && pid > 0 {
+        known_editor_pids_map().write().insert(norm, pid);
+    }
+}
+
+/// 从命令行列表同步更新已知的 `project_path -> pid` 映射
+fn refresh_known_editor_pids_from_cmdline() {
+    for (pid, cmdline) in GameLauncher::query_game_processes() {
+        if let Some(proj) = GameLauncher::extract_editor_project_from_cmdline(&cmdline) {
+            let norm = normalize_path_key(&proj);
+            if !norm.is_empty() {
+                known_editor_pids_map().write().insert(norm, pid);
+            }
         }
     }
 }
@@ -1607,6 +1772,213 @@ async fn handle_y3editor_mcp_proxy(
 /// 判断端口是否为候选的 HTTP MCP 端口（排除 `>= 49152` 的 `temp_ipc_server` 动态 pickle 端口、8768 网关自身以及 8769 `bridge_server` 二进制端口）
 fn is_candidate_mcp_http_port(port: u16) -> bool {
     (8000..49152).contains(&port) && port != 8768 && port != 8769
+}
+
+/// 检查本地 TCP 端口是否空闲可用（既不在 `netstat` 已监听集合中，且能成功 bind）
+fn is_tcp_port_available(port: u16, all_listening_ports: &HashSet<u16>) -> bool {
+    if all_listening_ports.contains(&port) {
+        return false;
+    }
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+/// 启动编辑器前检查端口冲突并分配空闲端口：
+/// - 若显式指定了 `requested_port` 且已被占用，直接返回错误提示冲突详情；
+/// - 若未指定，优先使用空闲的 `8765`，否则在 `8775..=8799` 中分配第一个空闲端口。
+fn allocate_or_verify_editor_port(
+    requested_port: Option<u16>,
+    running_editors: &[Value],
+) -> anyhow::Result<u16> {
+    let listening_map = list_game_exe_listening_ports();
+    let mut used_ports = HashSet::new();
+    for ports in listening_map.values() {
+        for &p in ports {
+            used_ports.insert(p);
+        }
+    }
+    for ed in running_editors {
+        if let Some(p) = ed.get("port").and_then(|v| v.as_u64()) {
+            used_ports.insert(p as u16);
+        }
+    }
+
+    if let Some(req_port) = requested_port {
+        if let Some(conflict_ed) = running_editors
+            .iter()
+            .find(|e| e.get("port").and_then(|v| v.as_u64()) == Some(req_port as u64))
+        {
+            let c_proj = conflict_ed
+                .get("project_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let c_pid = conflict_ed
+                .get("pid")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            anyhow::bail!(
+                "编辑器 MCP 端口 {} 已被项目 '{}' (PID {}) 占用！请指定其他空闲端口（如 8775..8799）或不传 editorPort 由系统自动分配。",
+                req_port,
+                c_proj,
+                c_pid
+            );
+        }
+        if !is_tcp_port_available(req_port, &used_ports) {
+            anyhow::bail!(
+                "指定的编辑器 MCP 端口 {} 已被其他进程占用，请更换空闲端口。",
+                req_port
+            );
+        }
+        return Ok(req_port);
+    }
+
+    if is_tcp_port_available(8765, &used_ports) {
+        return Ok(8765);
+    }
+
+    for candidate in 8775..=8799 {
+        if is_tcp_port_available(candidate, &used_ports) {
+            return Ok(candidate);
+        }
+    }
+
+    anyhow::bail!("未找到可用的编辑器 MCP 空闲端口 (8765 及 8775..=8799 均已被占用)")
+}
+
+/// 等待新启动的编辑器进程 `pid` 初始化完毕，并将其内置 MCP 绑定到预分配的 `target_port`
+fn wait_and_bind_launched_editor_port(
+    pid: u32,
+    project_path: &Path,
+    target_port: u16,
+) -> (u16, bool) {
+    let target_norm = normalize_path_key(&project_path.to_string_lossy());
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(22);
+
+    while start.elapsed() < timeout {
+        let listening_map = list_game_exe_listening_ports();
+        if let Some(ports) = listening_map.get(&pid) {
+            let ipc_port = ports.iter().copied().find(|&p| p >= 49152);
+            let has_8765 = ports.contains(&8765);
+            let has_target = ports.contains(&target_port);
+
+            if target_port == 8765 && has_8765 {
+                if let Some(info) = probe_editor_mcp_port(8765, Some(pid)) {
+                    let p_norm = info
+                        .get("project_path")
+                        .and_then(|v| v.as_str())
+                        .map(normalize_path_key)
+                        .unwrap_or_default();
+                    if p_norm == target_norm {
+                        return (8765, true);
+                    }
+                }
+            } else if target_port != 8765 {
+                if has_target {
+                    if probe_editor_mcp_port(target_port, Some(pid)).is_some() {
+                        return (target_port, true);
+                    }
+                } else if has_8765 {
+                    if let Some(ipc) = ipc_port {
+                        if force_rebind_editor_mcp_via_ipc(ipc, target_port) {
+                            for _ in 0..15 {
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                                if probe_editor_mcp_port(target_port, Some(pid)).is_some() {
+                                    return (target_port, true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    }
+
+    // 超时兜底：触发一次全局扫描重绑并查询该项目的实际端口
+    let editors = discover_running_editor_mcps();
+    for ed in &editors {
+        let ed_proj = ed
+            .get("project_path")
+            .and_then(|v| v.as_str())
+            .map(normalize_path_key)
+            .unwrap_or_default();
+        if ed_proj == target_norm {
+            if let Some(p) = ed.get("port").and_then(|v| v.as_u64()) {
+                return (p as u16, true);
+            }
+        }
+    }
+
+    (target_port, false)
+}
+
+/// 手动将指定项目（或指定 PID）的运行中编辑器 MCP 迁移绑定至 `new_port`（冲突时报错）
+fn rebind_running_editor_mcp_port(
+    target_project_path: Option<&Path>,
+    explicit_pid: Option<u32>,
+    new_port: u16,
+) -> anyhow::Result<Value> {
+    let editors = discover_running_editor_mcps();
+    let target_norm = target_project_path.map(|p| normalize_path_key(&p.to_string_lossy()));
+
+    // 查找目标编辑器实例
+    let mut target_ed: Option<&Value> = None;
+    if let Some(pid) = explicit_pid {
+        target_ed = editors
+            .iter()
+            .find(|e| e.get("pid").and_then(|v| v.as_u64()) == Some(pid as u64));
+    }
+    if target_ed.is_none() {
+        if let Some(ref t_norm) = target_norm {
+            target_ed = editors.iter().find(|e| {
+                e.get("project_path")
+                    .and_then(|v| v.as_str())
+                    .map(normalize_path_key)
+                    .as_deref()
+                    == Some(t_norm.as_str())
+            });
+        }
+    }
+
+    let ed_val = target_ed.ok_or_else(|| {
+        anyhow::anyhow!("未找到目标项目的运行中 Y3 编辑器实例，请先启动编辑器。")
+    })?;
+    let cur_port = ed_val.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+    let pid = ed_val
+        .get("pid")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32)
+        .ok_or_else(|| anyhow::anyhow!("无法确定目标编辑器的进程 PID"))?;
+
+    if cur_port == new_port {
+        return Ok(ed_val.clone());
+    }
+
+    // 检查 new_port 是否已被其他编辑器或进程占用
+    let _ = allocate_or_verify_editor_port(Some(new_port), &editors)?;
+
+    let listening_map = list_game_exe_listening_ports();
+    let ipc_port = listening_map
+        .get(&pid)
+        .and_then(|ports| ports.iter().copied().find(|&p| p >= 49152))
+        .ok_or_else(|| anyhow::anyhow!("未找到编辑器进程 (PID {}) 的 IPC 控制端口", pid))?;
+
+    if !force_rebind_editor_mcp_via_ipc(ipc_port, new_port) {
+        anyhow::bail!("向编辑器进程 (PID {}) 发送端口重绑指令失败", pid);
+    }
+
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        if let Some(info) = probe_editor_mcp_port(new_port, Some(pid)) {
+            return Ok(info);
+        }
+    }
+
+    anyhow::bail!(
+        "编辑器 (PID {}) 端口切换至 {} 超时，请稍后调用 discover_editor_mcps 检查",
+        pid,
+        new_port
+    )
 }
 
 /// 当检测到多个 Y3 编辑器 (`Game_x64h.exe`) 因官方 `dm/clients/mcp/mcp_server.py` 开启 `SO_REUSEADDR`
@@ -1632,6 +2004,9 @@ fn auto_rebind_shadowed_editor_mcps(listening_map: &std::collections::HashMap<u3
         }
     }
 
+    // 按 PID 升序排列，保证遍历顺序确定性
+    pids_only_on_8765.sort_by_key(|&(pid, _)| pid);
+
     // 只有当存在 2 个及以上编辑器同时挤在 8765 端口上时才需要自动分流重绑
     if pids_only_on_8765.len() < 2 {
         return false;
@@ -1648,7 +2023,7 @@ fn auto_rebind_shadowed_editor_mcps(listening_map: &std::collections::HashMap<u3
     let mut rebound_any = false;
     let mut next_port = 8775u16;
 
-    for (_pid, ipc_port) in pids_only_on_8765 {
+    for (pid, ipc_port) in pids_only_on_8765 {
         while used_ports.contains(&next_port)
             || std::net::TcpListener::bind(("127.0.0.1", next_port)).is_err()
         {
@@ -1657,30 +2032,31 @@ fn auto_rebind_shadowed_editor_mcps(listening_map: &std::collections::HashMap<u3
                 return rebound_any;
             }
         }
-        let assigned_port = next_port;
-        used_ports.insert(assigned_port);
+        let candidate_port = next_port;
 
-        if trigger_editor_mcp_rebind_via_ipc(ipc_port, &active_8765_proj, assigned_port) {
-            rebound_any = true;
-        }
-    }
-
-    if rebound_any {
-        // 等待后台线程完成新端口 HTTP Server 绑定
-        for _ in 0..10 {
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            if probe_editor_mcp_port(8775, None).is_some() {
-                break;
+        if trigger_editor_mcp_rebind_via_ipc(ipc_port, &active_8765_proj, candidate_port) {
+            // 检查该进程是否真正迁移到了 candidate_port（若该进程就是 active_8765_proj 本尊则不会绑定 candidate_port，不消耗该端口号）
+            for _ in 0..8 {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                if let Some(info) = probe_editor_mcp_port(candidate_port, Some(pid)) {
+                    if let Some(p_str) = info.get("project_path").and_then(|v| v.as_str()) {
+                        record_known_editor_pid(Path::new(p_str), pid);
+                    }
+                    used_ports.insert(candidate_port);
+                    next_port += 1;
+                    rebound_any = true;
+                    break;
+                }
             }
         }
     }
+
     rebound_any
 }
 
-/// 向编辑器进程 `temp_ipc_server` 端口发送零残留的维护指令：
-/// 1. 清理 `MultiServer.connections` 中可能残留的断开连接；
-/// 2. 若当前编辑器不是 8765 的实际应答者（即处于被 `SO_REUSEADDR` 屏蔽状态），将其 `clients.mcp.mcp_server` 迁移至 `new_port`。
-fn trigger_editor_mcp_rebind_via_ipc(ipc_port: u16, active_8765_proj_norm: &str, new_port: u16) -> bool {
+/// 通过 Base64 + Pickle `eval(b64decode(...))` 向编辑器 `temp_ipc_server` 发送 Python 指令（彻底规避引号与反斜杠转义问题）
+fn send_python_eval_to_editor_ipc(ipc_port: u16, py_expr: &str) -> bool {
+    use base64::Engine;
     use std::io::Read;
     use std::net::{Shutdown, SocketAddr, TcpStream};
     use std::time::Duration;
@@ -1696,17 +2072,8 @@ fn trigger_editor_mcp_rebind_via_ipc(ipc_port: u16, active_8765_proj_norm: &str,
     let _ = stream.set_read_timeout(Some(Duration::from_millis(120)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
 
-    let py_expr = format!(
-        "([obj.connections.clear() for obj in __import__('gc').get_objects() if type(obj).__name__ == 'MultiServer'], \
-          (lambda ms, info: __import__('threading').Thread(target=lambda: (ms.stop_server(), ms.start_server('127.0.0.1', {port})), daemon=True).start() \
-           if ms and getattr(ms._server, 'server_port', 0) == 8765 and info.get('project_path', '').replace('\\\\', '/').rstrip('/').lower() != '{active}' else None)\
-          (__import__('sys').modules.get('clients.mcp.mcp_server'), \
-           __import__('json').loads(__import__('sys').modules['clients.mcp.mcp_server']._call_tool('get_map_info', {{}}))), \
-          {{'proto': '', 'data': None}})[2]",
-        port = new_port,
-        active = active_8765_proj_norm.replace('\'', "\\'")
-    );
-    let pickle_payload = format!("cbuiltins\neval\n(S\"{}\"\ntR.", py_expr);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(py_expr.as_bytes());
+    let pickle_payload = format!("cbuiltins\neval\n(cbase64\nb64decode\n(S\"{}\"\ntRtR.", b64);
     let raw_bytes = pickle_payload.as_bytes();
     let total_len = (raw_bytes.len() + 4) as u32;
 
@@ -1730,6 +2097,66 @@ fn trigger_editor_mcp_rebind_via_ipc(ipc_port: u16, active_8765_proj_norm: &str,
     true
 }
 
+/// 无条件将指定 `ipc_port` 所在编辑器的 `clients.mcp.mcp_server` 切换到 `new_port`
+fn force_rebind_editor_mcp_via_ipc(ipc_port: u16, new_port: u16) -> bool {
+    let py_expr = format!(
+        "([obj.connections.clear() for obj in __import__('gc').get_objects() if type(obj).__name__ == 'MultiServer'], \
+          (lambda ms: __import__('threading').Thread(target=lambda: (setattr(ms, 'PORT_EDITOR', {port}), ms.stop_server(), ms.start_server('127.0.0.1', {port})), daemon=True).start() \
+           if ms and getattr(ms._server, 'server_port', 0) != {port} else None)\
+          (__import__('sys').modules.get('clients.mcp.mcp_server')), \
+          {{'proto': '', 'data': None}})[2]",
+        port = new_port
+    );
+    send_python_eval_to_editor_ipc(ipc_port, &py_expr)
+}
+
+/// 向编辑器进程 `temp_ipc_server` 端口发送零残留的维护指令：
+/// 1. 清理 `MultiServer.connections` 中可能残留的断开连接；
+/// 2. 若当前编辑器不是 8765 的实际应答者（即处于被 `SO_REUSEADDR` 屏蔽状态），将其 `clients.mcp.mcp_server` 迁移至 `new_port`。
+fn trigger_editor_mcp_rebind_via_ipc(ipc_port: u16, active_8765_proj_norm: &str, new_port: u16) -> bool {
+    let py_expr = format!(
+        "([obj.connections.clear() for obj in __import__('gc').get_objects() if type(obj).__name__ == 'MultiServer'], \
+          (lambda ms, info: __import__('threading').Thread(target=lambda: (setattr(ms, 'PORT_EDITOR', {port}), ms.stop_server(), ms.start_server('127.0.0.1', {port})), daemon=True).start() \
+           if ms and getattr(ms._server, 'server_port', 0) == 8765 and info.get('project_path', '').replace(chr(92), '/').rstrip('/').lower() != '{active}' else None)\
+          (__import__('sys').modules.get('clients.mcp.mcp_server'), \
+           __import__('json').loads(__import__('sys').modules['clients.mcp.mcp_server']._call_tool('get_map_info', {{}}))), \
+          {{'proto': '', 'data': None}})[2]",
+        port = new_port,
+        active = active_8765_proj_norm.replace('\'', "\\'")
+    );
+    send_python_eval_to_editor_ipc(ipc_port, &py_expr)
+}
+
+/// 当某个端口同时有多个 PID 监听时，根据已知的 `project_path -> pid` 映射解析真正属于该 `project_path` 的 PID
+fn resolve_owner_pid_for_project(project_path: &str, pids_on_port: &[u32]) -> Option<u32> {
+    if pids_on_port.len() == 1 {
+        return Some(pids_on_port[0]);
+    }
+    refresh_known_editor_pids_from_cmdline();
+    let proj_norm = normalize_path_key(project_path);
+    let map = known_editor_pids_map().read();
+    if let Some(&known_pid) = map.get(&proj_norm) {
+        if pids_on_port.contains(&known_pid) {
+            return Some(known_pid);
+        }
+    }
+    // 排除掉已知属于其他项目的 PID
+    let other_known_pids: HashSet<u32> = map
+        .iter()
+        .filter(|(k, _)| *k != &proj_norm)
+        .map(|(_, &v)| v)
+        .collect();
+    let remaining: Vec<u32> = pids_on_port
+        .iter()
+        .copied()
+        .filter(|pid| !other_known_pids.contains(pid))
+        .collect();
+    if remaining.len() == 1 {
+        return Some(remaining[0]);
+    }
+    None
+}
+
 /// 扫描本机所有正在运行的 Y3 编辑器实例及其内置 `y3editor` (`game_editor_mcp`) 端口与打开的地图信息
 pub fn discover_running_editor_mcps() -> Vec<Value> {
     let mut listening_map = list_game_exe_listening_ports();
@@ -1737,25 +2164,47 @@ pub fn discover_running_editor_mcps() -> Vec<Value> {
         listening_map = list_game_exe_listening_ports();
     }
 
-    let mut candidate_ports: Vec<(u16, Option<u32>)> = Vec::new();
-    let mut seen_ports = HashSet::new();
-
+    // 按端口聚合所有监听该端口的 PID（使用 BTreeMap 保证顺序稳定）
+    let mut port_to_pids: std::collections::BTreeMap<u16, Vec<u32>> =
+        std::collections::BTreeMap::new();
     for (pid, ports) in listening_map {
         for port in ports {
-            if is_candidate_mcp_http_port(port) && seen_ports.insert(port) {
-                candidate_ports.push((port, Some(pid)));
+            if is_candidate_mcp_http_port(port) {
+                let entry = port_to_pids.entry(port).or_default();
+                if !entry.contains(&pid) {
+                    entry.push(pid);
+                }
             }
         }
     }
-
-    // 始终把默认 8765 放入兜底探测列表
-    if seen_ports.insert(8765) {
-        candidate_ports.push((8765, None));
+    for pids in port_to_pids.values_mut() {
+        pids.sort_unstable();
     }
 
+    // 始终把默认 8765 放入兜底探测列表
+    port_to_pids.entry(8765).or_default();
+
     let mut editors = Vec::new();
-    for (port, pid_opt) in candidate_ports {
-        if let Some(info) = probe_editor_mcp_port(port, pid_opt) {
+    for (port, pids) in port_to_pids {
+        let initial_pid = if pids.len() == 1 { Some(pids[0]) } else { None };
+        if let Some(mut info) = probe_editor_mcp_port(port, initial_pid) {
+            let proj_str = info
+                .get("project_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if pids.len() == 1 {
+                record_known_editor_pid(Path::new(&proj_str), pids[0]);
+            } else if pids.len() > 1 {
+                let matched_pid = resolve_owner_pid_for_project(&proj_str, &pids);
+                if let Some(mp) = matched_pid {
+                    record_known_editor_pid(Path::new(&proj_str), mp);
+                }
+                if let Some(obj) = info.as_object_mut() {
+                    obj.insert("pid".to_string(), json!(matched_pid));
+                    obj.insert("port_conflict_pids".to_string(), json!(pids));
+                }
+            }
             editors.push(info);
         }
     }
@@ -1946,12 +2395,15 @@ pub fn forward_jsonrpc_to_editor_mcp_timeout(
     Ok(v)
 }
 
-async fn handle_api_runtime_mcps(State(state): State<HttpAppState>) -> Json<Value> {
+async fn handle_api_runtime_mcps(State(state): State<HttpAppState>) -> Response {
     let list = state.dispatcher.discover_running_runtime_mcps();
-    Json(json!({
-        "count": list.len(),
-        "runtimes": list
-    }))
+    utf8_json_response(
+        StatusCode::OK,
+        json!({
+            "count": list.len(),
+            "runtimes": list
+        }),
+    )
 }
 
 /// 常驻 `y3runtime` 智能多项目/多窗口路由网关 (`POST /y3runtime/mcp`)
@@ -2116,7 +2568,7 @@ async fn handle_y3runtime_mcp_proxy(
         }),
     };
 
-    let mut resp = (StatusCode::OK, Json(reply)).into_response();
+    let mut resp = utf8_json_response(StatusCode::OK, reply);
     if let Some(sid) = session_id {
         if let Ok(hv) = sid.parse() {
             resp.headers_mut().insert("Mcp-Session-Id", hv);

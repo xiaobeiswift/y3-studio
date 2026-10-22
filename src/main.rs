@@ -28,6 +28,16 @@ use y3_helper::{
 };
 
 fn main() -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        extern "system" {
+            fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+            fn SetConsoleCP(wCodePageID: u32) -> i32;
+        }
+        let _ = SetConsoleOutputCP(65001);
+        let _ = SetConsoleCP(65001);
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -108,6 +118,7 @@ async fn async_main() -> anyhow::Result<()> {
                 eprintln!("[Y3-Helper] 网络测试服务器已启动: 127.0.0.1:{}, 127.0.0.1:{}", p1, p2);
             }
             let dispatcher = ToolDispatcher::new(mgr);
+            restore_saved_projects(&dispatcher).await;
             let actual_port = start_http_server(dispatcher, port).await?;
             eprintln!(
                 "[Y3-Helper] 多项目独立服务已启动: http://127.0.0.1:{}/mcp (健康检查: http://127.0.0.1:{}/health)",

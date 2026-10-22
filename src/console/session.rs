@@ -481,7 +481,11 @@ impl GameSessionManager {
         for c in self.console_server.list_clients() {
             Self::force_quit_client(&c).await;
         }
+        let pids = self.known_pids();
         *self.current_session.write() = None;
+        for pid in pids {
+            let _ = GameLauncher::taskkill_pid(pid);
+        }
 
         json!({
             "success": true,

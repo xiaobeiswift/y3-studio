@@ -125,5 +125,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build-release.ps1
 ```
 
 打包完成后产物位于 `dist\` 目录：
-- `dist\Y3-Studio-v0.0.2-win-x64-setup.exe`：Windows 图形化安装包（含桌面/开始菜单快捷方式、PATH 环境变量配置及标准卸载程序 `uninstall.exe`，支持 `/S` 静默安装）
-- `dist\Y3-Studio-v0.0.2-win-x64-portable.zip`：Windows 绿色免安装包（解压即用，单文件无外部 DLL 依赖）
+- `dist\Y3-Studio-v0.0.3-win-x64-setup.exe`：Windows 图形化安装包（含桌面/开始菜单快捷方式、PATH 环境变量配置及标准卸载程序 `uninstall.exe`，支持 `/S` 静默安装）
+- `dist\Y3-Studio-v0.0.3-win-x64-portable.zip`：Windows 绿色免安装包（解压即用，单文件无外部 DLL 依赖）

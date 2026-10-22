@@ -17,6 +17,8 @@ pub struct ProjectWorkspace {
     pub context: Arc<RwLock<ProjectContext>>,
     pub console_server: Arc<ConsoleServer>,
     pub session_manager: Arc<GameSessionManager>,
+    pub editor_pid: RwLock<Option<u32>>,
+    pub preferred_editor_port: RwLock<Option<u16>>,
     _watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
 
@@ -48,6 +50,8 @@ impl ProjectWorkspace {
             context: context.clone(),
             console_server,
             session_manager,
+            editor_pid: RwLock::new(None),
+            preferred_editor_port: RwLock::new(None),
             _watcher: Mutex::new(None),
         });
 
@@ -138,6 +142,8 @@ impl ProjectWorkspace {
             "use_main_level_trigger_and_object": ctx.use_main_level_trigger_and_object,
             "use_main_level_ui": ctx.use_main_level_ui,
             "console_port": self.console_server.port,
+            "editor_pid": *self.editor_pid.read(),
+            "preferred_editor_port": *self.preferred_editor_port.read(),
             "connected_clients": self.console_server.list_clients().len(),
             "maps": maps_list,
             "game_status": self.session_manager.get_game_status(),
